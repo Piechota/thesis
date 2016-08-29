@@ -1,6 +1,5 @@
 #pragma once
 #include "pch.h"
-#include "math.h"
 #include "types.h"
 
 class CInputManager;

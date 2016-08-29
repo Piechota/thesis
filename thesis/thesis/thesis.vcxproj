@@ -114,15 +114,25 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="constantBuffers.h" />
+    <ClInclude Include="heapProperties.h" />
     <ClInclude Include="helpers.h" />
     <ClInclude Include="input.h" />
     <ClInclude Include="math.h" />
+    <ClInclude Include="meshLoader.h" />
     <ClInclude Include="pch.h" />
+    <ClInclude Include="render.h" />
+    <ClInclude Include="renderFrame.h" />
+    <ClInclude Include="skybox.h" />
+    <ClInclude Include="TextureLoader.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="types.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="meshLoader.cpp" />
+    <ClCompile Include="render.cpp" />
+    <ClCompile Include="TextureLoader.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

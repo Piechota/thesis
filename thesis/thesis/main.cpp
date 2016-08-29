@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "input.h"
 #include <Windows.h>
+#include "render.h"
 
 HWND GHWnd;
 UINT const GWidth = 960;
@@ -43,9 +44,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, 
 
 	ShowWindow(GHWnd, nCmdShow);
 
+	CRender render;
+	render.Init();
+
 	GInputManager.SetHWND(GHWnd);
 
 	GInputManager.Init();
 
+	render.Release();
 	return 0;
 }

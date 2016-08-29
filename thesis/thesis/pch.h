@@ -5,6 +5,7 @@
 #else
 #pragma comment(lib, "../DirectXTex/Bin/Desktop_2015/x64/Release/DirectXTex.lib")
 #endif
+#pragma comment( lib, "../assimp/lib/lib64/assimp.lib")
 #pragma comment( lib, "d3d12" )
 #pragma comment( lib, "dxgi" )
 #pragma comment( lib, "d3dcompiler" )
@@ -18,3 +19,10 @@
 #include <vector>
 #include <comdef.h>
 #include <intrin.h>
+
+#include "math.h"
+#include "helpers.h"
+
+extern HWND GHWnd;
+extern UINT const GWidth;
+extern UINT const GHeight;
