@@ -150,3 +150,20 @@ public:
 		m_hWnd = hWnd;
 	}
 };
+
+
+class CSystemInput : public IInputObserver
+{
+public:
+	virtual void Input(EKeys key)  override
+	{
+		switch (key)
+		{
+		case K_ESCAPE:
+		case MSG_DESTROY:
+			PostQuitMessage(0);
+			break;
+		}
+	}
+};
+extern CSystemInput GSystemInput;

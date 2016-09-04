@@ -72,6 +72,7 @@ private:
 	void InitSkybox();
 
 public:
+	void DrawFrame();
 	void Init();
 	void Release();
 };

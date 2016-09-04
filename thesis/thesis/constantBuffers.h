@@ -5,4 +5,5 @@ __declspec(align(256))
 struct FrameCB
 {
 	Matrix4x4 m_worldToProject;
+	Matrix4x4 m_objectToProject;
 };

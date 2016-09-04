@@ -114,6 +114,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="camera.h" />
     <ClInclude Include="constantBuffers.h" />
     <ClInclude Include="heapProperties.h" />
     <ClInclude Include="helpers.h" />
@@ -129,6 +130,7 @@
     <ClInclude Include="types.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="camera.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="meshLoader.cpp" />
     <ClCompile Include="render.cpp" />

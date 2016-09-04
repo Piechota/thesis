@@ -1,3 +1,4 @@
+#include "camera.h"
 #include "render.h"
 #include "constantBuffers.h"
 #include "meshLoader.h"
@@ -144,6 +145,7 @@ void CRender::InitRenderFrames()
 
 		CheckFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, renderFrame.m_commandAllocator, nullptr, IID_PPV_ARGS(&renderFrame.m_commandList)));
 		renderFrame.m_commandList->SetName(L"FrameCommandList");
+		CheckFailed(renderFrame.m_commandList->Close());
 
 		CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &descResource, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&renderFrame.m_frameResource)));
 		renderFrame.m_frameResource->SetName(L"FrameResource");
@@ -231,7 +233,7 @@ void CRender::InitSkybox()
 		/*DepthBias*/					,D3D12_DEFAULT_DEPTH_BIAS
 		/*DepthBiasClamp*/				,D3D12_DEFAULT_DEPTH_BIAS_CLAMP
 		/*SlopeScaledDepthBias*/		,D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS
-		/*DepthClipEnable*/				,TRUE
+		/*DepthClipEnable*/				,FALSE
 		/*MultisampleEnable*/			,FALSE
 		/*AntialiasedLineEnable*/		,FALSE
 		/*ForcedSampleCount*/			,0
@@ -308,9 +310,9 @@ void CRender::InitSkybox()
 	SVertexData* vertices = nullptr;
 	UINT32* indices = nullptr;
 	UINT verticesNum = 0;
-	UINT indicesNum = 0;
-
-	GMeshLoader.LoadMesh("../content/skydome.fbx", verticesNum, &vertices, indicesNum, &indices);
+	m_skybox.m_indicesNum = 0;
+	
+	GMeshLoader.LoadMesh("../content/skydome.fbx", verticesNum, &vertices, m_skybox.m_indicesNum, &indices);
 
 	D3D12_RESOURCE_DESC descResource = {};
 	descResource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -352,7 +354,7 @@ void CRender::InitSkybox()
 	}
 	verticesUploadRes->Unmap(0, nullptr);
 
-	descResource.Width = indicesNum * sizeof(UINT32);
+	descResource.Width = m_skybox.m_indicesNum * sizeof(UINT32);
 
 	ID3D12Resource* indicesUploadRes;
 	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &descResource, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indicesUploadRes)));
@@ -488,6 +490,81 @@ void CRender::InitSkybox()
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Format = skyboxTexture.m_format;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Texture2D.MipLevels = 1;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+
+	m_device->CreateShaderResourceView(m_skybox.m_texture, &srvDesc, m_materialsDH->GetCPUDescriptorHandleForHeapStart());
+
+	m_skybox.m_indicesBufferView.BufferLocation = m_skybox.m_meshInidces->GetGPUVirtualAddress();
+	m_skybox.m_indicesBufferView.Format = DXGI_FORMAT_R32_UINT;
+	m_skybox.m_indicesBufferView.SizeInBytes = m_skybox.m_indicesNum * sizeof(UINT32);
+
+	m_skybox.m_verticesBufferView.BufferLocation = m_skybox.m_meshVertices->GetGPUVirtualAddress();
+	m_skybox.m_verticesBufferView.StrideInBytes = sizeof(SVertexData);
+	m_skybox.m_verticesBufferView.SizeInBytes = verticesNum * sizeof(SVertexData);
+}
+
+void CRender::DrawFrame()
+{
+	Matrix4x4 worldToProjection = GCamera.GetWorldToCamera() * GCamera.GetProjectionMatrix();
+	memcpy(m_pRenderFrame->m_pResource, &worldToProjection, sizeof(Matrix4x4));
+
+	ID3D12GraphicsCommandList* commandList = m_pRenderFrame->m_commandList;
+
+	m_pRenderFrame->m_commandAllocator->Reset();
+	commandList->Reset(m_pRenderFrame->m_commandAllocator, m_skybox.m_skyboxPSO);
+
+	D3D12_CPU_DESCRIPTOR_HANDLE renderTargetDH = m_renderTargetDH->GetCPUDescriptorHandleForHeapStart();
+	renderTargetDH.ptr += m_renderTargetID * m_rtvDescriptorHandleIncrementSize;
+	D3D12_CPU_DESCRIPTOR_HANDLE depthDH = m_depthDH->GetCPUDescriptorHandleForHeapStart();
+
+	D3D12_RESOURCE_BARRIER renderTargetBarrier = {};
+	renderTargetBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	renderTargetBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+	renderTargetBarrier.Transition.pResource = m_rederTarget[m_renderTargetID];
+	renderTargetBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	renderTargetBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+	renderTargetBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+	commandList->ResourceBarrier(1, &renderTargetBarrier);
+
+	commandList->OMSetRenderTargets(1, &renderTargetDH, true, &depthDH);
+	commandList->SetDescriptorHeaps(1, &m_materialsDH);
+	
+	commandList->RSSetScissorRects(1, &m_scissorRect);
+	commandList->RSSetViewports(1, &m_viewport);
+	
+	commandList->SetGraphicsRootSignature(m_mainRS);
+	
+	commandList->SetGraphicsRootConstantBufferView(0, m_pRenderFrame->m_frameResource->GetGPUVirtualAddress());
+	commandList->SetGraphicsRootDescriptorTable(1, m_materialsDH->GetGPUDescriptorHandleForHeapStart());
+	
+	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	commandList->IASetIndexBuffer(&m_skybox.m_indicesBufferView);
+	commandList->IASetVertexBuffers(0, 1, &m_skybox.m_verticesBufferView);
+	
+	commandList->DrawIndexedInstanced(m_skybox.m_indicesNum, 1, 0, 0, 0);
+
+	renderTargetBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+	renderTargetBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+	commandList->ResourceBarrier(1, &renderTargetBarrier);
+
+	CheckFailed(commandList->Close());
+
+	ID3D12CommandList* ppMainCL[] = { commandList };
+	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+
+	CheckFailed(m_swapChain->Present(0, 0));
+
+	m_renderTargetID = (m_renderTargetID + 1) % FRAME_NUM;
+	m_renderFrameID = (m_renderFrameID + 1) % FRAME_NUM;
+	m_pRenderFrame = &m_renderFrames[m_renderFrameID];
 }
 
 void CRender::Init()
@@ -533,6 +610,11 @@ void CRender::Init()
 
 void CRender::Release()
 {
+	CheckFailed(m_mainCQ->Signal(m_fence, m_fenceValue));
+	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
+	++m_fenceValue;
+	WaitForSingleObject(m_fenceEvent, INFINITE);
+
 	m_debugController->Release();
 	
 	m_mainCQ->Release();
