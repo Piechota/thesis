@@ -5,7 +5,7 @@ static D3D12_HEAP_PROPERTIES const GHeapPropertiesGPUOnly =
 {
 	/*Type*/					D3D12_HEAP_TYPE_CUSTOM
 	/*CPUPageProperty*/			,D3D12_CPU_PAGE_PROPERTY_NOT_AVAILABLE
-	/*MemoryPoolPreference*/	,D3D12_MEMORY_POOL_L0
+	/*MemoryPoolPreference*/	,D3D12_MEMORY_POOL_L1
 	/*CreationNodeMask*/		,1
 	/*VisibleNodeMask*/			,1
 };

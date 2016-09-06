@@ -35,6 +35,11 @@ public:
 
 	void Update();
 
+	Vec3 GetPosition() const
+	{
+		return m_position;
+	}
+
 	Vec3 GetForward() const
 	{
 		static Vec4 const forward = Vec4(0.f, 0.f, 1.f, 0.f);

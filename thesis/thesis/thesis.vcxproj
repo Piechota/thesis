@@ -125,6 +125,7 @@
     <ClInclude Include="render.h" />
     <ClInclude Include="renderFrame.h" />
     <ClInclude Include="skybox.h" />
+    <ClInclude Include="terrain.h" />
     <ClInclude Include="TextureLoader.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="types.h" />

@@ -5,6 +5,11 @@
 #include "textureLoader.h"
 #include "heapProperties.h"
 
+UINT const GTerrainEdgeTiles = 5;
+float const GTerrainLoad0Sq = 200.f * 200.f;
+float const GTerrainLoad1Sq = 400.f * 400.f;
+Vec2 const GTerrainSize(400.f, 100.f);
+
 void CRender::LoadShader(LPCWSTR pFileName, D3D_SHADER_MACRO const* pDefines, ID3DInclude* pInclude, LPCSTR pEntrypoint, LPCSTR pTarget, UINT Flags1, ID3DBlob** ppCode)
 {
 	ID3DBlob* error;
@@ -213,6 +218,11 @@ void CRender::InitDescriptorHeaps()
 	descDescHeap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	CheckFailed(m_device->CreateDescriptorHeap(&descDescHeap, IID_PPV_ARGS(&m_materialsDH)));
 	m_materialsDH->SetName(L"MaterialsDescriptorHeaps");
+
+	descDescHeap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	descDescHeap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+	CheckFailed(m_device->CreateDescriptorHeap(&descDescHeap, IID_PPV_ARGS(&m_computeDH)));
+	m_materialsDH->SetName(L"ComputeDescriptorHeaps");
 }
 
 void CRender::InitSkybox()
@@ -306,6 +316,9 @@ void CRender::InitSkybox()
 	descPSO.pRootSignature = m_mainRS;
 
 	CheckFailed(m_device->CreateGraphicsPipelineState(&descPSO, IID_PPV_ARGS(&m_skybox.m_skyboxPSO)));
+
+	vsShader->Release();
+	psShader->Release();
 
 	SVertexData* vertices = nullptr;
 	UINT32* indices = nullptr;
@@ -435,6 +448,10 @@ void CRender::InitSkybox()
 	}
 	textureUploadRes->Unmap(0, nullptr);
 
+	m_copyCL->Close();
+	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
+	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
+
 	delete pFootprints;
 	delete pNumRows;
 	delete pRowPitches;
@@ -460,10 +477,6 @@ void CRender::InitSkybox()
 	barrires[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 	barrires[2].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 	barrires[2].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-	m_copyCL->Close();
-	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
-	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
 
 	m_mainCA->Reset();
 	m_mainCL->Reset(m_mainCA, nullptr);
@@ -495,7 +508,7 @@ void CRender::InitSkybox()
 	srvDesc.Format = skyboxTexture.m_format;
 	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.Texture2D.MipLevels = 1;
+	srvDesc.Texture2D.MipLevels = skyboxTexture.m_mipNum;
 	srvDesc.Texture2D.MostDetailedMip = 0;
 
 	m_device->CreateShaderResourceView(m_skybox.m_texture, &srvDesc, m_materialsDH->GetCPUDescriptorHandleForHeapStart());
@@ -507,6 +520,434 @@ void CRender::InitSkybox()
 	m_skybox.m_verticesBufferView.BufferLocation = m_skybox.m_meshVertices->GetGPUVirtualAddress();
 	m_skybox.m_verticesBufferView.StrideInBytes = sizeof(SVertexData);
 	m_skybox.m_verticesBufferView.SizeInBytes = verticesNum * sizeof(SVertexData);
+}
+
+void CRender::InitTerrain()
+{
+	ID3D12RootSignature* terrainIndicesRootSignature;
+	D3D12_ROOT_PARAMETER parametersRS[3];
+	parametersRS[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	parametersRS[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+	parametersRS[0].Descriptor = { 0, 0 };
+
+	parametersRS[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+	parametersRS[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+	parametersRS[1].Descriptor = { 0, 0 };
+
+	D3D12_DESCRIPTOR_RANGE descRange = {};
+	descRange.BaseShaderRegister = 0;
+	descRange.RegisterSpace = 0;
+	descRange.NumDescriptors = 1;
+	descRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+
+	parametersRS[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	parametersRS[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+	parametersRS[2].DescriptorTable.NumDescriptorRanges = 1;
+	parametersRS[2].DescriptorTable.pDescriptorRanges = &descRange;
+
+	D3D12_ROOT_SIGNATURE_DESC descRS = {};
+	descRS.NumParameters = 2;
+	descRS.pParameters = parametersRS;
+
+	ID3DBlob* signature;
+	CheckFailed(D3D12SerializeRootSignature(&descRS, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr));
+	CheckFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&terrainIndicesRootSignature)));
+	signature->Release();
+
+	ID3D12PipelineState* idPSO;
+	D3D12_COMPUTE_PIPELINE_STATE_DESC descIdPSO = {};
+	descIdPSO.pRootSignature = terrainIndicesRootSignature;
+
+	D3D_SHADER_MACRO const idMacros[] = { "TERRAIN_INDICES", NULL, NULL };
+	ID3DBlob* idShader;
+	LoadShader(L"../shaders/terrainGeneration.hlsl", idMacros, D3D_COMPILE_STANDARD_FILE_INCLUDE, "TerrainIndices", "cs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &idShader);
+	descIdPSO.CS = { idShader->GetBufferPointer(), idShader->GetBufferSize() };
+
+	CheckFailed(m_device->CreateComputePipelineState(&descIdPSO, IID_PPV_ARGS(&idPSO)));
+	idShader->Release();
+
+	D3D12_RESOURCE_DESC indicesDesc = {};
+	indicesDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	indicesDesc.Height = 1;
+	indicesDesc.DepthOrArraySize = 1;
+	indicesDesc.MipLevels = 1;
+	indicesDesc.Format = DXGI_FORMAT_UNKNOWN;
+	indicesDesc.SampleDesc.Count = 1;
+	indicesDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	indicesDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
+	{
+		indicesDesc.Width = 6 * GTerrainLodInfo[lodID][0] * sizeof(UINT32);
+
+		CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesGPUOnly, D3D12_HEAP_FLAG_NONE, &indicesDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_terrain.m_indices[lodID])));
+
+		D3D12_INDEX_BUFFER_VIEW& bufferView = m_terrain.m_indicesView[lodID];
+		bufferView.BufferLocation = m_terrain.m_indices[lodID]->GetGPUVirtualAddress();
+		bufferView.Format = DXGI_FORMAT_R32_UINT;
+		bufferView.SizeInBytes = indicesDesc.Width;
+
+		m_terrain.m_indicesNum[lodID] = 6 * GTerrainLodInfo[lodID][0];
+	}
+
+	ID3D12Resource* indicesCB;
+	D3D12_RESOURCE_DESC cbDesc = {};
+	cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	cbDesc.Height = 1;
+	cbDesc.Width = ELods::MAX * sizeof(TileGenCB);
+	cbDesc.DepthOrArraySize = 1;
+	cbDesc.MipLevels = 1;
+	cbDesc.Format = DXGI_FORMAT_UNKNOWN;
+	cbDesc.SampleDesc.Count = 1;
+	cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	cbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &cbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&indicesCB)));
+	TileGenCB* cbData = nullptr;
+	indicesCB->Map(0, nullptr, (void**)(&cbData));
+
+	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
+	{
+		cbData[lodID].m_verticesOnEdge = GTerrainLodInfo[lodID][1] + 1;
+		cbData[lodID].m_quadsOnEdge = GTerrainLodInfo[lodID][1];
+	}
+
+	indicesCB->Unmap(0, nullptr);
+
+	m_computeCA->Reset();
+	m_computeCL->Reset(m_computeCA, idPSO);
+
+	m_computeCL->SetComputeRootSignature(terrainIndicesRootSignature);
+
+	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = indicesCB->GetGPUVirtualAddress();
+	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
+	{
+		UINT const indGroupNum = (UINT)ceil((float)GTerrainLodInfo[lodID][1] / 32.f);
+
+
+		m_computeCL->SetComputeRootConstantBufferView(0, cbAddress);
+		m_computeCL->SetComputeRootUnorderedAccessView(1, m_terrain.m_indices[lodID]->GetGPUVirtualAddress());
+		m_computeCL->Dispatch(indGroupNum, indGroupNum, 1);
+	}
+
+	m_computeCL->Close();
+
+	ID3D12CommandList* ppComputeCL[] = { m_computeCL };
+	m_computeCQ->ExecuteCommandLists(1, ppComputeCL);
+
+	STexutre heightmap;
+	void* cpuImg = GTextureLoader.LoadTexture("../content/terrain_hm.dds", heightmap);
+
+	D3D12_RESOURCE_DESC descHeightmap = {};
+	descHeightmap.DepthOrArraySize = 1;
+	descHeightmap.SampleDesc.Count = 1;
+	descHeightmap.Flags = D3D12_RESOURCE_FLAG_NONE;
+	descHeightmap.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	descHeightmap.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	descHeightmap.MipLevels = heightmap.m_mipNum;
+	descHeightmap.Width = heightmap.m_x[0];
+	descHeightmap.Height = heightmap.m_y[0];
+	descHeightmap.Format = heightmap.m_format;
+
+	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &descHeightmap, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_terrain.m_heightmap)));
+
+	UINT64 bufferSize;
+	D3D12_PLACED_SUBRESOURCE_FOOTPRINT* pFootprints = new D3D12_PLACED_SUBRESOURCE_FOOTPRINT[heightmap.m_mipNum];
+	UINT* pNumRows = new UINT[heightmap.m_mipNum];
+	UINT64* pRowPitches = new UINT64[heightmap.m_mipNum];
+	m_device->GetCopyableFootprints(&descHeightmap, 0, heightmap.m_mipNum, 0, pFootprints, pNumRows, pRowPitches, &bufferSize);
+
+	descHeightmap.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	descHeightmap.Format = DXGI_FORMAT_UNKNOWN;
+	descHeightmap.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	descHeightmap.MipLevels = 1;
+	descHeightmap.Height = 1;
+	descHeightmap.Width = bufferSize;
+
+	ID3D12Resource* textureUploadRes;
+	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &descHeightmap, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&textureUploadRes)));
+
+	m_copyCA->Reset();
+	m_copyCL->Reset(m_copyCA, nullptr);
+
+	void* pGPU;
+	textureUploadRes->Map(0, nullptr, &pGPU);
+	for (UINT mipID = 0; mipID < heightmap.m_mipNum; ++mipID)
+	{
+		for (UINT rowID = 0; rowID < pNumRows[mipID]; ++rowID)
+		{
+			memcpy((BYTE*)pGPU + pFootprints[mipID].Offset + rowID * pFootprints[mipID].Footprint.RowPitch, heightmap.m_data[mipID] + rowID * pRowPitches[mipID], pRowPitches[mipID]);
+		}
+
+		D3D12_TEXTURE_COPY_LOCATION dst;
+		dst.pResource = m_terrain.m_heightmap;
+		dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		dst.SubresourceIndex = mipID;
+
+		D3D12_TEXTURE_COPY_LOCATION src;
+		src.pResource = textureUploadRes;
+		src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		src.PlacedFootprint = pFootprints[mipID];
+
+		m_copyCL->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+	}
+	textureUploadRes->Unmap(0, nullptr);
+	m_copyCL->Close();
+
+	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
+	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
+
+
+	delete pFootprints;
+	delete pNumRows;
+	delete pRowPitches;
+
+	D3D12_RESOURCE_BARRIER barriers[ELods::MAX + 1];
+	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
+	{
+		barriers[lodID].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[lodID].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		barriers[lodID].Transition.pResource = m_terrain.m_indices[lodID];
+		barriers[lodID].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		barriers[lodID].Transition.StateAfter = D3D12_RESOURCE_STATE_INDEX_BUFFER;
+		barriers[lodID].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	}
+
+	barriers[ELods::MAX].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+	barriers[ELods::MAX].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barriers[ELods::MAX].Transition.pResource = m_terrain.m_heightmap;
+	barriers[ELods::MAX].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+	barriers[ELods::MAX].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	barriers[ELods::MAX].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+	m_mainCA->Reset();
+	m_mainCL->Reset(m_mainCA, nullptr);
+
+	m_mainCL->ResourceBarrier(ELods::MAX + 1, barriers);
+
+	m_mainCL->Close();
+
+	ID3D12CommandList* ppMainCL[] = { m_mainCL };
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Format = heightmap.m_format;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Texture2D.MipLevels = heightmap.m_mipNum;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+
+	m_device->CreateShaderResourceView(m_terrain.m_heightmap, &srvDesc, m_computeDH->GetCPUDescriptorHandleForHeapStart());
+
+	descRS.NumParameters = 3;
+
+	CheckFailed(D3D12SerializeRootSignature(&descRS, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr));
+	CheckFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_terrain.m_terrainRS)));
+	signature->Release();
+
+	ID3D12PipelineState* verPosPSO;
+	D3D12_COMPUTE_PIPELINE_STATE_DESC descVerPSO = {};
+	descVerPSO.pRootSignature = m_terrain.m_terrainRS;
+
+	D3D_SHADER_MACRO const verPosMacros[] = { "TERRAIN_VERTICES", NULL, "TERRAIN_VERTICES_POS", NULL, NULL };
+	D3D_SHADER_MACRO const verLigMacros[] = { "TERRAIN_VERTICES", NULL, "TERRAIN_VERTICES_NOR_TAN", NULL, NULL };
+	ID3DBlob* verShader;
+	LoadShader(L"../shaders/terrainGeneration.hlsl", verPosMacros, D3D_COMPILE_STANDARD_FILE_INCLUDE, "TerrainVertices", "cs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &verShader);
+	descVerPSO.CS = { verShader->GetBufferPointer(), verShader->GetBufferSize() };
+
+	CheckFailed(m_device->CreateComputePipelineState(&descVerPSO, IID_PPV_ARGS(&m_terrain.m_terrainPosPSO)));
+	verShader->Release();
+
+	LoadShader(L"../shaders/terrainGeneration.hlsl", verLigMacros, D3D_COMPILE_STANDARD_FILE_INCLUDE, "TerrainVertices", "cs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &verShader);
+	descVerPSO.CS = { verShader->GetBufferPointer(), verShader->GetBufferSize() };
+
+	CheckFailed(m_device->CreateComputePipelineState(&descVerPSO, IID_PPV_ARGS(&m_terrain.m_terrainLightPSO)));
+	verShader->Release();
+
+	CheckFailed(m_copyCQ->Signal(m_fence, m_fenceValue));
+	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
+	++m_fenceValue;
+	WaitForSingleObject(m_fenceEvent, INFINITE);
+
+	textureUploadRes->Release();
+	delete cpuImg;
+
+	CheckFailed(m_computeCQ->Signal(m_fence, m_fenceValue));
+	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
+	++m_fenceValue;
+	WaitForSingleObject(m_fenceEvent, INFINITE);
+
+	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+
+	indicesCB->Release();
+	idPSO->Release();
+	terrainIndicesRootSignature->Release();
+
+	CheckFailed(m_mainCQ->Signal(m_fence, m_fenceValue));
+	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
+	++m_fenceValue;
+	WaitForSingleObject(m_fenceEvent, INFINITE);
+
+	m_terrain.m_tilesData.resize(GTerrainEdgeTiles * GTerrainEdgeTiles);
+
+	D3D12_RESOURCE_DESC descTileData = {};
+	descTileData.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	descTileData.Height = 1;
+	descTileData.Width = GTerrainEdgeTiles * GTerrainEdgeTiles * sizeof(TileGenCB);
+	descTileData.DepthOrArraySize = 1;
+	descTileData.MipLevels = 1;
+	descTileData.Format = DXGI_FORMAT_UNKNOWN;
+	descTileData.SampleDesc.Count = 1;
+	descTileData.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	descTileData.Flags = D3D12_RESOURCE_FLAG_NONE;
+	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &descTileData, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_terrain.m_gpuTileData)));
+	m_terrain.m_gpuTileData->Map(0, nullptr, (void**)(&m_terrain.m_pGpuTileData));
+
+	float const invTilesEdgeNum = 1.f / (float)GTerrainEdgeTiles;
+
+	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
+	{
+		for (UINT y = 0; y < GTerrainEdgeTiles; ++y)
+		{
+			UINT const flatID = x * GTerrainEdgeTiles + y;
+			TileGenCB& tileCB = m_terrain.m_pGpuTileData[flatID];
+
+			tileCB.m_heightmapRect.Set( invTilesEdgeNum, (float)x * invTilesEdgeNum, (float)y * invTilesEdgeNum);
+			tileCB.m_worldTileSize = GTerrainSize.x * invTilesEdgeNum;
+			tileCB.m_terrainHeight = GTerrainSize.y;
+			tileCB.m_tilePosition.Set(x * tileCB.m_worldTileSize, y * tileCB.m_worldTileSize);
+			tileCB.m_heightmapRes.Set(heightmap.m_x[0], heightmap.m_y[0]);
+			tileCB.m_edgesData = 0;
+
+			if (0 < x) tileCB.m_edgesData |= LEFT_TILE;
+			if (0 < y) tileCB.m_edgesData |= BOTTOM_TILE;
+			if (x < GTerrainEdgeTiles - 1) tileCB.m_edgesData |= RIGHT_TILE;
+			if (y < GTerrainEdgeTiles - 1) tileCB.m_edgesData |= TOP_TILE;
+
+			m_terrain.m_tilesData[flatID].m_centerPosition.Set(x * tileCB.m_worldTileSize + tileCB.m_worldTileSize * 0.5f, 0.f, y * tileCB.m_worldTileSize + tileCB.m_worldTileSize * 0.5f);
+		}
+	}
+
+	UpdateTerrain();
+}
+
+void CRender::UpdateTerrain()
+{
+	Vec3 const cameraPos = GCamera.GetPosition();
+	UINT verticesNum = 0;
+	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
+	{
+		for (UINT y = 0; y < GTerrainEdgeTiles; ++y)
+		{
+			UINT const flatID = x * GTerrainEdgeTiles + y;
+			STileData& tileData = m_terrain.m_tilesData[flatID];
+
+			tileData.m_verticesOffset = verticesNum;
+
+			tileData.m_lod = LOD2;
+			float const sqDistance = (cameraPos - tileData.m_centerPosition).LengthSq();
+			if (sqDistance < GTerrainLoad1Sq)
+			{
+				tileData.m_lod = LOD1;
+				if (sqDistance < GTerrainLoad0Sq)
+				{
+					tileData.m_lod = LOD0;
+				}
+			}
+
+			verticesNum += (GTerrainLodInfo[tileData.m_lod][1] + 1) * (GTerrainLodInfo[tileData.m_lod][1] + 1);
+		}
+	}
+
+	D3D12_RESOURCE_DESC descVertics = {};
+	descVertics.DepthOrArraySize = 1;
+	descVertics.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	descVertics.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	descVertics.Format = DXGI_FORMAT_UNKNOWN;
+	descVertics.Height = 1;
+	descVertics.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	descVertics.MipLevels = 1;
+	descVertics.SampleDesc.Count = 1;
+	descVertics.Width = verticesNum * sizeof(SVertexData);
+
+	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesGPUOnly, D3D12_HEAP_FLAG_NONE, &descVertics, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_terrain.m_vertices)));
+
+	m_terrain.m_verticesView.BufferLocation = m_terrain.m_vertices->GetGPUVirtualAddress();
+	m_terrain.m_verticesView.SizeInBytes = descVertics.Width;
+	m_terrain.m_verticesView.StrideInBytes = sizeof(SVertexData);
+
+	m_computeCA->Reset();
+	m_computeCL->Reset(m_computeCA, m_terrain.m_terrainPosPSO);
+	m_computeCL->SetDescriptorHeaps(1, &m_computeDH);
+	m_computeCL->SetComputeRootSignature(m_terrain.m_terrainRS);
+	m_computeCL->SetComputeRootUnorderedAccessView(1, m_terrain.m_vertices->GetGPUVirtualAddress());
+	m_computeCL->SetComputeRootDescriptorTable(2, m_computeDH->GetGPUDescriptorHandleForHeapStart());
+
+	D3D12_GPU_VIRTUAL_ADDRESS vTileCB = m_terrain.m_gpuTileData->GetGPUVirtualAddress();
+	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
+	{
+		for (UINT y = 0; y < GTerrainEdgeTiles; ++y)
+		{
+			UINT const flatID = x * GTerrainEdgeTiles + y;
+			ELods const tileLod = m_terrain.m_tilesData[flatID].m_lod;
+			TileGenCB& tileCB = m_terrain.m_pGpuTileData[flatID];
+			tileCB.m_edgesData &= ~EDGE_LOD_MASK;
+			tileCB.m_verticesOnEdge = GTerrainLodInfo[tileLod][1] + 1;
+			tileCB.m_quadsOnEdge = GTerrainLodInfo[tileLod][1];
+			tileCB.m_uvQuadSize = 1.f / (float)GTerrainLodInfo[tileLod][1];
+			tileCB.m_dataOffset = m_terrain.m_tilesData[flatID].m_verticesOffset;
+
+			if (0 < x)
+			{
+				ELods const otherTileLod = m_terrain.m_tilesData[(x-1) * GTerrainEdgeTiles + y].m_lod;
+				if (tileLod < otherTileLod) tileCB.m_edgesData |= LEFT_LOD;
+			}
+			if (0 < y)
+			{
+				ELods const otherTileLod = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y - 1].m_lod;
+				if (tileLod < otherTileLod) tileCB.m_edgesData |= BOTTOM_LOD;
+			}
+			if (x < GTerrainEdgeTiles - 1)
+			{
+				ELods const otherTileLod = m_terrain.m_tilesData[( x + 1 ) * GTerrainEdgeTiles + y ].m_lod;
+				if (tileLod < otherTileLod) tileCB.m_edgesData |= RIGHT_LOD;
+			}
+			if (y < GTerrainEdgeTiles - 1)
+			{
+				ELods const otherTileLod = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y + 1].m_lod;
+				if (tileLod < otherTileLod) tileCB.m_edgesData |= TOP_LOD;
+			}
+
+			m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + flatID * sizeof(TileGenCB));
+			UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
+			m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
+		}
+	}
+
+	D3D12_RESOURCE_BARRIER verticesBarrier = {};
+	verticesBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+	verticesBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+	verticesBarrier.UAV.pResource = m_terrain.m_vertices;
+
+	m_computeCL->ResourceBarrier(1, &verticesBarrier);
+	m_computeCL->SetPipelineState(m_terrain.m_terrainLightPSO);
+
+	for (UINT tileID = 0; tileID < GTerrainEdgeTiles * GTerrainEdgeTiles; ++tileID)
+	{
+		ELods const tileLod = m_terrain.m_tilesData[tileID].m_lod;
+		UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
+		m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + tileID * sizeof(TileGenCB));
+		m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
+	}
+
+	m_computeCL->Close();
+
+	ID3D12CommandList* ppComputeCL[] = { m_computeCL };
+	m_computeCQ->ExecuteCommandLists(1, ppComputeCL);
+
+	CheckFailed(m_computeCQ->Signal(m_fence, m_fenceValue));
+	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
+	++m_fenceValue;
+	WaitForSingleObject(m_fenceEvent, INFINITE);
 }
 
 void CRender::DrawFrame()
@@ -606,11 +1047,17 @@ void CRender::Init()
 	InitRootSignature();
 	InitDescriptorHeaps();
 	InitSkybox();
+	InitTerrain();
 }
 
 void CRender::Release()
 {
 	CheckFailed(m_mainCQ->Signal(m_fence, m_fenceValue));
+	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
+	++m_fenceValue;
+	WaitForSingleObject(m_fenceEvent, INFINITE);
+
+	CheckFailed(m_computeCQ->Signal(m_fence, m_fenceValue));
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
@@ -649,13 +1096,21 @@ void CRender::Release()
 	m_mainRS->Release();
 
 	m_materialsDH->Release();
-	//m_computeDH;
+	m_computeDH->Release();
 
 	//m_mainPSO->Release();
 
-	//m_terrainGenRS;
-	//m_terrainGetPosPSO;
-	//m_terrainGetNorTanPSO;
+	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
+	{
+		m_terrain.m_indices[lodID]->Release();
+	}
+	m_terrain.m_heightmap->Release();
+	m_terrain.m_gpuTileData->Unmap(0, nullptr);
+	m_terrain.m_gpuTileData->Release();
+	m_terrain.m_vertices->Release();
+	m_terrain.m_terrainRS->Release();
+	m_terrain.m_terrainPosPSO->Release();
+	m_terrain.m_terrainLightPSO->Release();
 
 	m_skybox.m_skyboxPSO->Release();
 	m_skybox.m_meshVertices->Release();
