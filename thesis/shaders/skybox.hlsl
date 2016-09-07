@@ -12,10 +12,15 @@ struct PSInput
 SamplerState Sampler : register(s0);
 
 #ifdef VERTEX_S
-cbuffer frameBuffer : register(b0)
+cbuffer objectBuffer : register(b0)
 {
 	float4x4 WorldToProject;
-}
+	float4x4 ObjectToWorld;
+	float3 LightDir;
+	float3 LightColor;
+	float LightIntensity;
+	float3 AmbientColor;
+};
 PSInput vsMain(VSInput input)
 {
     PSInput result;

@@ -54,9 +54,14 @@ public:
 	ID3D12Resource*	m_gpuTileData;
 	TileGenCB*	m_pGpuTileData;
 
+	ID3D12Resource* m_diffuseTex;
+	ID3D12Resource* m_normalTex;
+
 	ID3D12RootSignature* m_terrainRS;
 	ID3D12PipelineState* m_terrainPosPSO;
 	ID3D12PipelineState* m_terrainLightPSO;
 
 	std::vector< STileData > m_tilesData;
+
+	Matrix4x4 m_objectToWorld;
 };

@@ -12,6 +12,7 @@ CInputManager GInputManager;
 CCamera GCamera;
 CTimer GTimer;
 CSystemInput GSystemInput;
+Matrix4x4 const Matrix4x4::Identity = XMMatrixIdentity();
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR pCmdLine, INT nCmdShow)
 {

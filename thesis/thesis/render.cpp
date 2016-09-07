@@ -2,13 +2,75 @@
 #include "render.h"
 #include "constantBuffers.h"
 #include "meshLoader.h"
-#include "textureLoader.h"
 #include "heapProperties.h"
+#include "timer.h"
 
 UINT const GTerrainEdgeTiles = 5;
+UINT const GTerrainTilesNum = GTerrainEdgeTiles * GTerrainEdgeTiles;
 float const GTerrainLoad0Sq = 200.f * 200.f;
 float const GTerrainLoad1Sq = 400.f * 400.f;
 Vec2 const GTerrainSize(400.f, 100.f);
+
+ID3D12Resource* CRender::CopyTexture(STexutre const& texture, ID3D12Resource** resource)
+{
+	D3D12_RESOURCE_DESC descTexture = {};
+	descTexture.DepthOrArraySize = 1;
+	descTexture.SampleDesc.Count = 1;
+	descTexture.Flags = D3D12_RESOURCE_FLAG_NONE;
+	descTexture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	descTexture.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+	descTexture.MipLevels = texture.m_mipNum;
+	descTexture.Width = texture.m_x[0];
+	descTexture.Height = texture.m_y[0];
+	descTexture.Format = texture.m_format;
+
+	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &descTexture, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(resource)));
+
+	UINT64 bufferSize;
+	D3D12_PLACED_SUBRESOURCE_FOOTPRINT* pFootprints = new D3D12_PLACED_SUBRESOURCE_FOOTPRINT[texture.m_mipNum];
+	UINT* pNumRows = new UINT[texture.m_mipNum];
+	UINT64* pRowPitches = new UINT64[texture.m_mipNum];
+	m_device->GetCopyableFootprints(&descTexture, 0, texture.m_mipNum, 0, pFootprints, pNumRows, pRowPitches, &bufferSize);
+
+	descTexture.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	descTexture.Format = DXGI_FORMAT_UNKNOWN;
+	descTexture.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+	descTexture.MipLevels = 1;
+	descTexture.Height = 1;
+	descTexture.Width = bufferSize;
+
+	ID3D12Resource* textureUploadRes;
+	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &descTexture, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&textureUploadRes)));
+
+	void* pGPU;
+	textureUploadRes->Map(0, nullptr, &pGPU);
+	for (UINT mipID = 0; mipID < texture.m_mipNum; ++mipID)
+	{
+		for (UINT rowID = 0; rowID < pNumRows[mipID]; ++rowID)
+		{
+			memcpy((BYTE*)pGPU + pFootprints[mipID].Offset + rowID * pFootprints[mipID].Footprint.RowPitch, texture.m_data[mipID] + rowID * pRowPitches[mipID], pRowPitches[mipID]);
+		}
+
+		D3D12_TEXTURE_COPY_LOCATION dst;
+		dst.pResource = *resource;
+		dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+		dst.SubresourceIndex = mipID;
+
+		D3D12_TEXTURE_COPY_LOCATION src;
+		src.pResource = textureUploadRes;
+		src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+		src.PlacedFootprint = pFootprints[mipID];
+
+		m_copyCL->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+	}
+	textureUploadRes->Unmap(0, nullptr);
+
+	delete pFootprints;
+	delete pNumRows;
+	delete pRowPitches;
+
+	return textureUploadRes;
+}
 
 void CRender::LoadShader(LPCWSTR pFileName, D3D_SHADER_MACRO const* pDefines, ID3DInclude* pInclude, LPCSTR pEntrypoint, LPCSTR pTarget, UINT Flags1, ID3DBlob** ppCode)
 {
@@ -77,6 +139,7 @@ void CRender::InitSwapChain()
 void CRender::InitRenderTargets()
 {
 	m_rtvDescriptorHandleIncrementSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+	m_srvDescriptorHandleIncrementSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
 	D3D12_DESCRIPTOR_HEAP_DESC descDescHeap = {};
 	descDescHeap.NumDescriptors = FRAME_NUM;
@@ -139,7 +202,10 @@ void CRender::InitRenderFrames()
 	descResource.SampleDesc.Count = 1;
 	descResource.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	descResource.Flags = D3D12_RESOURCE_FLAG_NONE;
-	descResource.Width = sizeof(FrameCB);
+	descResource.Width = sizeof(ObjectBufferCB);
+
+	Vec3 lightDir = Vec3(-1.f, 1.f, -1.f);
+	lightDir.Normalize();
 
 	for (UINT frameID = 0; frameID < FRAME_NUM; ++frameID)
 	{
@@ -156,6 +222,12 @@ void CRender::InitRenderFrames()
 		renderFrame.m_frameResource->SetName(L"FrameResource");
 
 		CheckFailed(renderFrame.m_frameResource->Map(0, nullptr, &renderFrame.m_pResource));
+
+		ObjectBufferCB* objectBuffer = (ObjectBufferCB*)(renderFrame.m_pResource);
+		objectBuffer->m_lightDir = lightDir;
+		objectBuffer->m_lightColor.Set(0.5f, 0.5f, 0.5f);
+		objectBuffer->m_lightIntensity = 1.f;
+		objectBuffer->m_ambientColor.Set(0.1f, 0.1f, 0.1f);
 	}
 
 	m_renderFrameID = 0;
@@ -166,13 +238,13 @@ void CRender::InitRootSignature()
 {
 	D3D12_DESCRIPTOR_RANGE descriptorRange[] = 
 	{
-		{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND }
+		{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND }
 	};
 
 	D3D12_ROOT_PARAMETER rootParameter[2];
 	rootParameter[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
 	rootParameter[0].Descriptor = { 0, 0 };
-	rootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+	rootParameter[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
 	rootParameter[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	rootParameter[1].DescriptorTable = { 1, descriptorRange };
@@ -202,7 +274,7 @@ void CRender::InitRootSignature()
 	descRootSignature.pParameters = rootParameter;
 	descRootSignature.NumStaticSamplers = 1;
 	descRootSignature.pStaticSamplers = samplers;
-	descRootSignature.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+	descRootSignature.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT | D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS;
 
 	ID3DBlob* signature;
 	CheckFailed(D3D12SerializeRootSignature(&descRootSignature, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr));
@@ -213,7 +285,7 @@ void CRender::InitRootSignature()
 void CRender::InitDescriptorHeaps()
 {
 	D3D12_DESCRIPTOR_HEAP_DESC descDescHeap = {};
-	descDescHeap.NumDescriptors = 1;
+	descDescHeap.NumDescriptors = 3;
 	descDescHeap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	descDescHeap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	CheckFailed(m_device->CreateDescriptorHeap(&descDescHeap, IID_PPV_ARGS(&m_materialsDH)));
@@ -223,6 +295,101 @@ void CRender::InitDescriptorHeaps()
 	descDescHeap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	CheckFailed(m_device->CreateDescriptorHeap(&descDescHeap, IID_PPV_ARGS(&m_computeDH)));
 	m_materialsDH->SetName(L"ComputeDescriptorHeaps");
+}
+
+void CRender::InitMainPSO()
+{
+	D3D12_INPUT_ELEMENT_DESC const vertDesc[4] =
+	{
+		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+	};
+
+	static D3D12_RASTERIZER_DESC const rasterizerState =
+	{
+		/*FillMode*/					D3D12_FILL_MODE_SOLID
+		/*CullMode*/					,D3D12_CULL_MODE_BACK
+		/*FrontCounterClockwise*/		,FALSE
+		/*DepthBias*/					,D3D12_DEFAULT_DEPTH_BIAS
+		/*DepthBiasClamp*/				,D3D12_DEFAULT_DEPTH_BIAS_CLAMP
+		/*SlopeScaledDepthBias*/		,D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS
+		/*DepthClipEnable*/				,TRUE
+		/*MultisampleEnable*/			,FALSE
+		/*AntialiasedLineEnable*/		,FALSE
+		/*ForcedSampleCount*/			,0
+		/*ConservativeRaster*/			,D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF
+	};
+	static D3D12_BLEND_DESC const blendState =
+	{
+		/*AlphaToCoverageEnable*/					FALSE
+		/*IndependentBlendEnable*/					,FALSE
+		/*RenderTarget[0].BlendEnable*/				,FALSE
+		/*RenderTarget[0].LogicOpEnable*/			,FALSE
+		/*RenderTarget[0].SrcBlend*/				,D3D12_BLEND_ONE
+		/*RenderTarget[0].DestBlend*/				,D3D12_BLEND_ZERO
+		/*RenderTarget[0].BlendOp*/					,D3D12_BLEND_OP_ADD
+		/*RenderTarget[0].SrcBlendAlpha*/			,D3D12_BLEND_ONE
+		/*RenderTarget[0].DestBlendAlpha*/			,D3D12_BLEND_ZERO
+		/*RenderTarget[0].BlendOpAlpha*/			,D3D12_BLEND_OP_ADD
+		/*RenderTarget[0].LogicOp*/					,D3D12_LOGIC_OP_NOOP
+		/*RenderTarget[0].RenderTargetWriteMask*/	,D3D12_COLOR_WRITE_ENABLE_ALL
+		/*RenderTarget[1].BlendEnable*/				,FALSE
+		/*RenderTarget[1].LogicOpEnable*/			,FALSE
+		/*RenderTarget[1].SrcBlend*/				,D3D12_BLEND_ONE
+		/*RenderTarget[1].DestBlend*/				,D3D12_BLEND_ZERO
+		/*RenderTarget[1].BlendOp*/					,D3D12_BLEND_OP_ADD
+		/*RenderTarget[1].SrcBlendAlpha*/			,D3D12_BLEND_ONE
+		/*RenderTarget[1].DestBlendAlpha*/			,D3D12_BLEND_ZERO
+		/*RenderTarget[1].BlendOpAlpha*/			,D3D12_BLEND_OP_ADD
+		/*RenderTarget[1].LogicOp*/					,D3D12_LOGIC_OP_NOOP
+		/*RenderTarget[1].RenderTargetWriteMask*/	,D3D12_COLOR_WRITE_ENABLE_ALL
+	};
+	static D3D12_DEPTH_STENCIL_DESC const depthStencilState =
+	{
+		/*DepthEnable*/							TRUE
+		/*DepthWriteMask*/						,D3D12_DEPTH_WRITE_MASK_ALL
+		/*DepthFunc*/							,D3D12_COMPARISON_FUNC_LESS
+		/*StencilEnable*/						,FALSE
+		/*StencilReadMask*/						,D3D12_DEFAULT_STENCIL_READ_MASK
+		/*StencilWriteMask*/					,D3D12_DEFAULT_STENCIL_WRITE_MASK
+		/*FrontFace.StencilFailOp*/				,{ D3D12_STENCIL_OP_REPLACE
+		/*FrontFace.StencilDepthFailOp*/		,D3D12_STENCIL_OP_REPLACE
+		/*FrontFace.StencilPassOp*/				,D3D12_STENCIL_OP_REPLACE
+		/*FrontFace.StencilFunc*/				,D3D12_COMPARISON_FUNC_ALWAYS }
+		/*BackFace.StencilFailOp*/				,{ D3D12_STENCIL_OP_REPLACE
+		/*BackFace.StencilDepthFailOp*/			,D3D12_STENCIL_OP_REPLACE
+		/*BackFace.StencilPassOp*/				,D3D12_STENCIL_OP_REPLACE
+		/*BackFace.StencilFunc*/				,D3D12_COMPARISON_FUNC_ALWAYS }
+	};
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC descPSO = {};
+	descPSO.BlendState = blendState;
+	descPSO.DepthStencilState = depthStencilState;
+	descPSO.InputLayout = { vertDesc, 4 };
+	descPSO.RasterizerState = rasterizerState;
+	descPSO.SampleDesc.Count = 1;
+	descPSO.SampleMask = UINT_MAX;
+	descPSO.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+	descPSO.NumRenderTargets = 1;
+	descPSO.RTVFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
+	descPSO.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+	ID3DBlob* vsShader;
+	LoadShader(L"../shaders/meshDraw.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "vsMain", "vs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &vsShader);
+	descPSO.VS = { vsShader->GetBufferPointer(), vsShader->GetBufferSize() };
+
+	ID3DBlob* psShader;
+	LoadShader(L"../shaders/meshDraw.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "psMain", "ps_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &psShader);
+	descPSO.PS = { psShader->GetBufferPointer(), psShader->GetBufferSize() };
+
+	descPSO.pRootSignature = m_mainRS;
+
+	CheckFailed(m_device->CreateGraphicsPipelineState(&descPSO, IID_PPV_ARGS(&m_mainPSO)));
+
+	vsShader->Release();
+	psShader->Release();
 }
 
 void CRender::InitSkybox()
@@ -396,65 +563,16 @@ void CRender::InitSkybox()
 	STexutre skyboxTexture;
 	void* cpuImg = GTextureLoader.LoadTexture("../content/skybox.dds", skyboxTexture);
 
-	descResource.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	descResource.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-	descResource.MipLevels = skyboxTexture.m_mipNum;
-	descResource.Width = skyboxTexture.m_x[0];
-	descResource.Height = skyboxTexture.m_y[0];
-	descResource.Format = skyboxTexture.m_format;
-
-	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &descResource, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_skybox.m_texture)));
-
-	UINT64 bufferSize;
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT* pFootprints = new D3D12_PLACED_SUBRESOURCE_FOOTPRINT[skyboxTexture.m_mipNum];
-	UINT* pNumRows = new UINT[skyboxTexture.m_mipNum];
-	UINT64* pRowPitches = new UINT64[skyboxTexture.m_mipNum];
-	m_device->GetCopyableFootprints(&descResource, 0, skyboxTexture.m_mipNum, 0, pFootprints, pNumRows, pRowPitches, &bufferSize);
-
-	descResource.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	descResource.Format = DXGI_FORMAT_UNKNOWN;
-	descResource.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	descResource.MipLevels = 1;
-	descResource.Height = 1;
-	descResource.Width = bufferSize;
-
-	ID3D12Resource* textureUploadRes;
-	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &descResource, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&textureUploadRes)));
-
 	m_copyCA->Reset();
 	m_copyCL->Reset(m_copyCA, nullptr);
 	m_copyCL->CopyResource(m_skybox.m_meshVertices, verticesUploadRes);
 	m_copyCL->CopyResource(m_skybox.m_meshInidces, indicesUploadRes);
 
-	textureUploadRes->Map(0, nullptr, &pGPU);
-	for (UINT mipID = 0; mipID < skyboxTexture.m_mipNum; ++mipID)
-	{
-		for (UINT rowID = 0; rowID < pNumRows[mipID]; ++rowID)
-		{
-			memcpy((BYTE*)pGPU + pFootprints[mipID].Offset + rowID * pFootprints[mipID].Footprint.RowPitch, skyboxTexture.m_data[mipID] + rowID * pRowPitches[mipID], pRowPitches[mipID]);
-		}
-
-		D3D12_TEXTURE_COPY_LOCATION dst;
-		dst.pResource = m_skybox.m_texture;
-		dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		dst.SubresourceIndex = mipID;
-
-		D3D12_TEXTURE_COPY_LOCATION src;
-		src.pResource = textureUploadRes;
-		src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-		src.PlacedFootprint = pFootprints[mipID];
-
-		m_copyCL->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-	}
-	textureUploadRes->Unmap(0, nullptr);
+	ID3D12Resource* textureUploadRes = CopyTexture( skyboxTexture, &m_skybox.m_texture );
 
 	m_copyCL->Close();
 	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
 	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
-
-	delete pFootprints;
-	delete pNumRows;
-	delete pRowPitches;
 
 	D3D12_RESOURCE_BARRIER barrires[3];
 	barrires[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -624,10 +742,10 @@ void CRender::InitTerrain()
 	{
 		UINT const indGroupNum = (UINT)ceil((float)GTerrainLodInfo[lodID][1] / 32.f);
 
-
 		m_computeCL->SetComputeRootConstantBufferView(0, cbAddress);
 		m_computeCL->SetComputeRootUnorderedAccessView(1, m_terrain.m_indices[lodID]->GetGPUVirtualAddress());
 		m_computeCL->Dispatch(indGroupNum, indGroupNum, 1);
+		cbAddress += sizeof(TileGenCB);
 	}
 
 	m_computeCL->Close();
@@ -636,71 +754,23 @@ void CRender::InitTerrain()
 	m_computeCQ->ExecuteCommandLists(1, ppComputeCL);
 
 	STexutre heightmap;
-	void* cpuImg = GTextureLoader.LoadTexture("../content/terrain_hm.dds", heightmap);
-
-	D3D12_RESOURCE_DESC descHeightmap = {};
-	descHeightmap.DepthOrArraySize = 1;
-	descHeightmap.SampleDesc.Count = 1;
-	descHeightmap.Flags = D3D12_RESOURCE_FLAG_NONE;
-	descHeightmap.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	descHeightmap.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-	descHeightmap.MipLevels = heightmap.m_mipNum;
-	descHeightmap.Width = heightmap.m_x[0];
-	descHeightmap.Height = heightmap.m_y[0];
-	descHeightmap.Format = heightmap.m_format;
-
-	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &descHeightmap, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_terrain.m_heightmap)));
-
-	UINT64 bufferSize;
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT* pFootprints = new D3D12_PLACED_SUBRESOURCE_FOOTPRINT[heightmap.m_mipNum];
-	UINT* pNumRows = new UINT[heightmap.m_mipNum];
-	UINT64* pRowPitches = new UINT64[heightmap.m_mipNum];
-	m_device->GetCopyableFootprints(&descHeightmap, 0, heightmap.m_mipNum, 0, pFootprints, pNumRows, pRowPitches, &bufferSize);
-
-	descHeightmap.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	descHeightmap.Format = DXGI_FORMAT_UNKNOWN;
-	descHeightmap.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	descHeightmap.MipLevels = 1;
-	descHeightmap.Height = 1;
-	descHeightmap.Width = bufferSize;
-
-	ID3D12Resource* textureUploadRes;
-	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesUpload, D3D12_HEAP_FLAG_NONE, &descHeightmap, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&textureUploadRes)));
+	void* cpuImgHM = GTextureLoader.LoadTexture("../content/terrain_hm.dds", heightmap);
+	STexutre diffuse;
+	void* cpuImgDM = GTextureLoader.LoadTexture("../content/terrain_df.dds", diffuse);
+	STexutre normal;
+	void* cpuImgNM = GTextureLoader.LoadTexture("../content/terrain_nm.dds", normal);
 
 	m_copyCA->Reset();
 	m_copyCL->Reset(m_copyCA, nullptr);
 
-	void* pGPU;
-	textureUploadRes->Map(0, nullptr, &pGPU);
-	for (UINT mipID = 0; mipID < heightmap.m_mipNum; ++mipID)
-	{
-		for (UINT rowID = 0; rowID < pNumRows[mipID]; ++rowID)
-		{
-			memcpy((BYTE*)pGPU + pFootprints[mipID].Offset + rowID * pFootprints[mipID].Footprint.RowPitch, heightmap.m_data[mipID] + rowID * pRowPitches[mipID], pRowPitches[mipID]);
-		}
+	ID3D12Resource* textureUploadResHM = CopyTexture(heightmap, &m_terrain.m_heightmap);
+	ID3D12Resource* textureUploadResDM = CopyTexture(diffuse, &m_terrain.m_diffuseTex);
+	ID3D12Resource* textureUploadResNM = CopyTexture(normal, &m_terrain.m_normalTex);
 
-		D3D12_TEXTURE_COPY_LOCATION dst;
-		dst.pResource = m_terrain.m_heightmap;
-		dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		dst.SubresourceIndex = mipID;
-
-		D3D12_TEXTURE_COPY_LOCATION src;
-		src.pResource = textureUploadRes;
-		src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-		src.PlacedFootprint = pFootprints[mipID];
-
-		m_copyCL->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-	}
-	textureUploadRes->Unmap(0, nullptr);
 	m_copyCL->Close();
 
 	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
 	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
-
-
-	delete pFootprints;
-	delete pNumRows;
-	delete pRowPitches;
 
 	D3D12_RESOURCE_BARRIER barriers[ELods::MAX + 1];
 	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
@@ -738,6 +808,18 @@ void CRender::InitTerrain()
 
 	m_device->CreateShaderResourceView(m_terrain.m_heightmap, &srvDesc, m_computeDH->GetCPUDescriptorHandleForHeapStart());
 
+	D3D12_CPU_DESCRIPTOR_HANDLE materialDH = m_materialsDH->GetCPUDescriptorHandleForHeapStart();
+
+	materialDH.ptr += m_srvDescriptorHandleIncrementSize;
+	srvDesc.Format = diffuse.m_format;
+	srvDesc.Texture2D.MipLevels = diffuse.m_mipNum;
+	m_device->CreateShaderResourceView(m_terrain.m_diffuseTex, &srvDesc, materialDH);
+
+	materialDH.ptr += m_srvDescriptorHandleIncrementSize;
+	srvDesc.Format = normal.m_format;
+	srvDesc.Texture2D.MipLevels = normal.m_mipNum;
+	m_device->CreateShaderResourceView(m_terrain.m_normalTex, &srvDesc, materialDH);
+
 	descRS.NumParameters = 3;
 
 	CheckFailed(D3D12SerializeRootSignature(&descRS, D3D_ROOT_SIGNATURE_VERSION_1, &signature, nullptr));
@@ -768,8 +850,12 @@ void CRender::InitTerrain()
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 
-	textureUploadRes->Release();
-	delete cpuImg;
+	textureUploadResHM->Release();
+	textureUploadResDM->Release();
+	textureUploadResNM->Release();
+	delete cpuImgHM;
+	delete cpuImgDM;
+	delete cpuImgNM;
 
 	CheckFailed(m_computeCQ->Signal(m_fence, m_fenceValue));
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
@@ -826,12 +912,21 @@ void CRender::InitTerrain()
 			m_terrain.m_tilesData[flatID].m_centerPosition.Set(x * tileCB.m_worldTileSize + tileCB.m_worldTileSize * 0.5f, 0.f, y * tileCB.m_worldTileSize + tileCB.m_worldTileSize * 0.5f);
 		}
 	}
+	m_terrain.m_vertices = nullptr;
+
+	m_terrain.m_objectToWorld = Matrix4x4::Identity;
 
 	UpdateTerrain();
 }
 
 void CRender::UpdateTerrain()
 {
+
+	if (m_terrain.m_vertices)
+	{
+		m_terrain.m_vertices->Release();
+	}
+
 	Vec3 const cameraPos = GCamera.GetPosition();
 	UINT verticesNum = 0;
 	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
@@ -870,7 +965,7 @@ void CRender::UpdateTerrain()
 	descVertics.Width = verticesNum * sizeof(SVertexData);
 
 	CheckFailed(m_device->CreateCommittedResource(&GHeapPropertiesGPUOnly, D3D12_HEAP_FLAG_NONE, &descVertics, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&m_terrain.m_vertices)));
-
+	m_terrain.m_vertices->SetName(L"TerrainVertices");
 	m_terrain.m_verticesView.BufferLocation = m_terrain.m_vertices->GetGPUVirtualAddress();
 	m_terrain.m_verticesView.SizeInBytes = descVertics.Width;
 	m_terrain.m_verticesView.StrideInBytes = sizeof(SVertexData);
@@ -931,7 +1026,7 @@ void CRender::UpdateTerrain()
 	m_computeCL->ResourceBarrier(1, &verticesBarrier);
 	m_computeCL->SetPipelineState(m_terrain.m_terrainLightPSO);
 
-	for (UINT tileID = 0; tileID < GTerrainEdgeTiles * GTerrainEdgeTiles; ++tileID)
+	for (UINT tileID = 0; tileID < GTerrainTilesNum; ++tileID)
 	{
 		ELods const tileLod = m_terrain.m_tilesData[tileID].m_lod;
 		UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
@@ -944,7 +1039,29 @@ void CRender::UpdateTerrain()
 	ID3D12CommandList* ppComputeCL[] = { m_computeCL };
 	m_computeCQ->ExecuteCommandLists(1, ppComputeCL);
 
+	verticesBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	verticesBarrier.Transition.pResource = m_terrain.m_vertices;
+	verticesBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
+	verticesBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	verticesBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+	m_mainCA->Reset();
+	m_mainCL->Reset(m_mainCA, nullptr);
+
+	m_mainCL->ResourceBarrier(1, &verticesBarrier);
+
+	m_mainCL->Close();
+
+	ID3D12CommandList* ppMainCL[] = { m_mainCL };
+
 	CheckFailed(m_computeCQ->Signal(m_fence, m_fenceValue));
+	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
+	++m_fenceValue;
+	WaitForSingleObject(m_fenceEvent, INFINITE);
+
+	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+
+	CheckFailed(m_mainCQ->Signal(m_fence, m_fenceValue));
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
@@ -952,8 +1069,14 @@ void CRender::UpdateTerrain()
 
 void CRender::DrawFrame()
 {
+	UpdateTerrain();
+
 	Matrix4x4 worldToProjection = GCamera.GetWorldToCamera() * GCamera.GetProjectionMatrix();
-	memcpy(m_pRenderFrame->m_pResource, &worldToProjection, sizeof(Matrix4x4));
+	Matrix4x4 objectToProjection = worldToProjection;
+	Matrix4x4 objectToWorld = m_terrain.m_objectToWorld;
+	ObjectBufferCB* objectBuffer = (ObjectBufferCB*)(m_pRenderFrame->m_pResource);
+	objectBuffer->m_objectToWorld = objectToWorld;
+	objectBuffer->m_worldToProject = worldToProjection;
 
 	ID3D12GraphicsCommandList* commandList = m_pRenderFrame->m_commandList;
 
@@ -962,7 +1085,8 @@ void CRender::DrawFrame()
 
 	D3D12_CPU_DESCRIPTOR_HANDLE renderTargetDH = m_renderTargetDH->GetCPUDescriptorHandleForHeapStart();
 	renderTargetDH.ptr += m_renderTargetID * m_rtvDescriptorHandleIncrementSize;
-	D3D12_CPU_DESCRIPTOR_HANDLE depthDH = m_depthDH->GetCPUDescriptorHandleForHeapStart();
+	D3D12_CPU_DESCRIPTOR_HANDLE const depthDH = m_depthDH->GetCPUDescriptorHandleForHeapStart();
+	D3D12_GPU_DESCRIPTOR_HANDLE const terrainMaterial = { m_materialsDH->GetGPUDescriptorHandleForHeapStart().ptr + m_srvDescriptorHandleIncrementSize };
 
 	D3D12_RESOURCE_BARRIER renderTargetBarrier = {};
 	renderTargetBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -975,6 +1099,8 @@ void CRender::DrawFrame()
 	commandList->ResourceBarrier(1, &renderTargetBarrier);
 
 	commandList->OMSetRenderTargets(1, &renderTargetDH, true, &depthDH);
+	commandList->ClearDepthStencilView(depthDH, D3D12_CLEAR_FLAG_DEPTH, 1.f, 0, 0, nullptr);
+
 	commandList->SetDescriptorHeaps(1, &m_materialsDH);
 	
 	commandList->RSSetScissorRects(1, &m_scissorRect);
@@ -990,6 +1116,16 @@ void CRender::DrawFrame()
 	commandList->IASetVertexBuffers(0, 1, &m_skybox.m_verticesBufferView);
 	
 	commandList->DrawIndexedInstanced(m_skybox.m_indicesNum, 1, 0, 0, 0);
+
+	commandList->SetPipelineState(m_mainPSO);
+	commandList->IASetVertexBuffers(0, 1, &m_terrain.m_verticesView);
+	commandList->SetGraphicsRootDescriptorTable(1, terrainMaterial);
+
+	for (STileData const& tileData : m_terrain.m_tilesData)
+	{
+		commandList->IASetIndexBuffer(&m_terrain.m_indicesView[tileData.m_lod]);
+		commandList->DrawIndexedInstanced(m_terrain.m_indicesNum[tileData.m_lod], 1, 0, tileData.m_verticesOffset, 0);
+	}
 
 	renderTargetBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
 	renderTargetBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1046,6 +1182,7 @@ void CRender::Init()
 	InitRenderFrames();
 	InitRootSignature();
 	InitDescriptorHeaps();
+	InitMainPSO();
 	InitSkybox();
 	InitTerrain();
 }
@@ -1098,7 +1235,7 @@ void CRender::Release()
 	m_materialsDH->Release();
 	m_computeDH->Release();
 
-	//m_mainPSO->Release();
+	m_mainPSO->Release();
 
 	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
 	{
@@ -1111,6 +1248,8 @@ void CRender::Release()
 	m_terrain.m_terrainRS->Release();
 	m_terrain.m_terrainPosPSO->Release();
 	m_terrain.m_terrainLightPSO->Release();
+	m_terrain.m_diffuseTex->Release();
+	m_terrain.m_normalTex->Release();
 
 	m_skybox.m_skyboxPSO->Release();
 	m_skybox.m_meshVertices->Release();

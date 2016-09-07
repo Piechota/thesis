@@ -66,7 +66,7 @@ float3 GetPosition(float2 normalUV, uint2 dispatchThreadID)
 		height = Heightmap.Load(int3(uv, 0)).x;
 	}
 
-	return float3(normalUV.x * WorldTileSize, height * TerrainHeight, normalUV.y * WorldTileSize) 
+	return float3(normalUV.x * WorldTileSize, height * TerrainHeight, normalUV.y * WorldTileSize)
 		+ float3(TilePosition.x, 0.f, TilePosition.y);
 }
 

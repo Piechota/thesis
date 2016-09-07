@@ -110,6 +110,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <FxCompile Include="meshDraw.hlsl" />
     <FxCompile Include="skybox.hlsl" />
     <FxCompile Include="terrainGeneration.hlsl" />
   </ItemGroup>

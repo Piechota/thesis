@@ -17,5 +17,6 @@
   <ItemGroup>
     <FxCompile Include="skybox.hlsl" />
     <FxCompile Include="terrainGeneration.hlsl" />
+    <FxCompile Include="meshDraw.hlsl" />
   </ItemGroup>
 </Project>

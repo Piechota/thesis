@@ -1,14 +1,9 @@
 #pragma once
 #include "pch.h"
 
-#define PADDING float padding##_COUNTER_;
-
-__declspec(align(256))
-struct FrameCB
-{
-	Matrix4x4 m_worldToProject;
-	Matrix4x4 m_objectToProject;
-};
+#define PADDING_X( x ) float padding##x
+#define PADDING_Y( y ) PADDING_X( y )
+#define PADDING PADDING_Y( __COUNTER__ )
 
 __declspec(align(256))
 struct TileGenCB
@@ -23,4 +18,16 @@ struct TileGenCB
 	UINT m_quadsOnEdge;
 	UINT m_edgesData;
 	UINT m_dataOffset;
+};
+
+__declspec(align(256))
+struct ObjectBufferCB
+{
+	Matrix4x4 m_worldToProject;
+	Matrix4x4 m_objectToWorld;
+	Vec3 m_lightDir;
+	PADDING;
+	Vec3 m_lightColor;
+	float m_lightIntensity;
+	Vec3 m_ambientColor;
 };

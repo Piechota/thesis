@@ -3,6 +3,7 @@
 #include "renderFrame.h"
 #include "skybox.h"
 #include "terrain.h"
+#include "textureLoader.h"
 
 class CRender
 {
@@ -55,11 +56,14 @@ private:
 	ID3D12PipelineState*		m_mainPSO;
 
 	UINT						m_rtvDescriptorHandleIncrementSize;
+	UINT						m_srvDescriptorHandleIncrementSize;
 
 	SSkybox						m_skybox;
 	CTerrain					m_terrain;
 
 private:
+	ID3D12Resource* CopyTexture(STexutre const& texture, ID3D12Resource** resource);
+
 	void LoadShader(LPCWSTR pFileName, D3D_SHADER_MACRO const* pDefines, ID3DInclude* pInclude, LPCSTR pEntrypoint, LPCSTR pTarget, UINT Flags1, ID3DBlob** ppCode);
 	void InitCommands();
 	void InitSwapChain();
@@ -67,6 +71,7 @@ private:
 	void InitRenderFrames();
 	void InitRootSignature();
 	void InitDescriptorHeaps();
+	void InitMainPSO();
 	void InitSkybox();
 	void InitTerrain();
 	void UpdateTerrain();
