@@ -54,6 +54,7 @@ private:
 	ID3D12DescriptorHeap*		m_computeDH;
 
 	ID3D12PipelineState*		m_mainPSO;
+	ID3D12PipelineState*		m_mainWireframePSO;
 
 	UINT						m_rtvDescriptorHandleIncrementSize;
 	UINT						m_srvDescriptorHandleIncrementSize;

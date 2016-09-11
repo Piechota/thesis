@@ -10,6 +10,8 @@ UINT const GTerrainTilesNum = GTerrainEdgeTiles * GTerrainEdgeTiles;
 float const GTerrainLoad0Sq = 200.f * 200.f;
 float const GTerrainLoad1Sq = 400.f * 400.f;
 Vec2 const GTerrainSize(400.f, 100.f);
+bool GUpdateTerrain = true;
+bool GWireframe = false;
 
 ID3D12Resource* CRender::CopyTexture(STexutre const& texture, ID3D12Resource** resource)
 {
@@ -307,7 +309,7 @@ void CRender::InitMainPSO()
 		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, D3D12_APPEND_ALIGNED_ELEMENT, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
 	};
 
-	static D3D12_RASTERIZER_DESC const rasterizerState =
+	D3D12_RASTERIZER_DESC rasterizerState =
 	{
 		/*FillMode*/					D3D12_FILL_MODE_SOLID
 		/*CullMode*/					,D3D12_CULL_MODE_BACK
@@ -387,6 +389,10 @@ void CRender::InitMainPSO()
 	descPSO.pRootSignature = m_mainRS;
 
 	CheckFailed(m_device->CreateGraphicsPipelineState(&descPSO, IID_PPV_ARGS(&m_mainPSO)));
+
+	rasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
+	descPSO.RasterizerState = rasterizerState;
+	CheckFailed(m_device->CreateGraphicsPipelineState(&descPSO, IID_PPV_ARGS(&m_mainWireframePSO)));
 
 	vsShader->Release();
 	psShader->Release();
@@ -831,7 +837,8 @@ void CRender::InitTerrain()
 	descVerPSO.pRootSignature = m_terrain.m_terrainRS;
 
 	D3D_SHADER_MACRO const verPosMacros[] = { "TERRAIN_VERTICES", NULL, "TERRAIN_VERTICES_POS", NULL, NULL };
-	D3D_SHADER_MACRO const verLigMacros[] = { "TERRAIN_VERTICES", NULL, "TERRAIN_VERTICES_NOR_TAN", NULL, NULL };
+	D3D_SHADER_MACRO const verLigMacrosP0[] = { "TERRAIN_VERTICES", NULL, "TERRAIN_VERTICES_NOR_TAN", NULL, "TERRAIN_VERTICES_NOR_TAN_PASS0", NULL, NULL };
+	D3D_SHADER_MACRO const verLigMacrosP1[] = { "TERRAIN_VERTICES", NULL, "TERRAIN_VERTICES_NOR_TAN", NULL, "TERRAIN_VERTICES_NOR_TAN_PASS1", NULL, NULL };
 	ID3DBlob* verShader;
 	LoadShader(L"../shaders/terrainGeneration.hlsl", verPosMacros, D3D_COMPILE_STANDARD_FILE_INCLUDE, "TerrainVertices", "cs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &verShader);
 	descVerPSO.CS = { verShader->GetBufferPointer(), verShader->GetBufferSize() };
@@ -839,10 +846,16 @@ void CRender::InitTerrain()
 	CheckFailed(m_device->CreateComputePipelineState(&descVerPSO, IID_PPV_ARGS(&m_terrain.m_terrainPosPSO)));
 	verShader->Release();
 
-	LoadShader(L"../shaders/terrainGeneration.hlsl", verLigMacros, D3D_COMPILE_STANDARD_FILE_INCLUDE, "TerrainVertices", "cs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &verShader);
+	LoadShader(L"../shaders/terrainGeneration.hlsl", verLigMacrosP0, D3D_COMPILE_STANDARD_FILE_INCLUDE, "TerrainVertices", "cs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &verShader);
 	descVerPSO.CS = { verShader->GetBufferPointer(), verShader->GetBufferSize() };
 
-	CheckFailed(m_device->CreateComputePipelineState(&descVerPSO, IID_PPV_ARGS(&m_terrain.m_terrainLightPSO)));
+	CheckFailed(m_device->CreateComputePipelineState(&descVerPSO, IID_PPV_ARGS(&m_terrain.m_terrainLightPSOPass0)));
+	verShader->Release();
+
+	LoadShader(L"../shaders/terrainGeneration.hlsl", verLigMacrosP1, D3D_COMPILE_STANDARD_FILE_INCLUDE, "TerrainVertices", "cs_5_1", D3DCOMPILE_OPTIMIZATION_LEVEL2, &verShader);
+	descVerPSO.CS = { verShader->GetBufferPointer(), verShader->GetBufferSize() };
+
+	CheckFailed(m_device->CreateComputePipelineState(&descVerPSO, IID_PPV_ARGS(&m_terrain.m_terrainLightPSOPass1)));
 	verShader->Release();
 
 	CheckFailed(m_copyCQ->Signal(m_fence, m_fenceValue));
@@ -921,10 +934,10 @@ void CRender::InitTerrain()
 
 void CRender::UpdateTerrain()
 {
-
 	if (m_terrain.m_vertices)
 	{
 		m_terrain.m_vertices->Release();
+		m_terrain.m_vertices = nullptr;
 	}
 
 	Vec3 const cameraPos = GCamera.GetPosition();
@@ -993,27 +1006,64 @@ void CRender::UpdateTerrain()
 
 			if (0 < x)
 			{
-				ELods const otherTileLod = m_terrain.m_tilesData[(x-1) * GTerrainEdgeTiles + y].m_lod;
-				if (tileLod < otherTileLod) tileCB.m_edgesData |= LEFT_LOD;
+				STileData const& otherTileData = m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y];
+				tileCB.m_neighborsTilesLeft = otherTileData.m_verticesOffset;
+				if (tileLod < otherTileData.m_lod) tileCB.m_edgesData |= LEFT_LOD;
+				if (otherTileData.m_lod < tileLod) tileCB.m_edgesData |= LEFT_LOW_LOD;
 			}
 			if (0 < y)
 			{
-				ELods const otherTileLod = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y - 1].m_lod;
-				if (tileLod < otherTileLod) tileCB.m_edgesData |= BOTTOM_LOD;
+				STileData const& otherTileData = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y - 1];
+				tileCB.m_neighborsTilesBottom = otherTileData.m_verticesOffset;
+				if (tileLod < otherTileData.m_lod) tileCB.m_edgesData |= BOTTOM_LOD;
+				if (otherTileData.m_lod < tileLod) tileCB.m_edgesData |= BOTTOM_LOW_LOD;
+
+				if (0 < x)
+				{
+					STileData const& crossTileData = m_terrain.m_tilesData[( x - 1) * GTerrainEdgeTiles + y - 1];
+					tileCB.m_neighborsTilesBottomLeft = crossTileData.m_verticesOffset;
+					if (tileLod < crossTileData.m_lod) tileCB.m_edgesData |= BOTTOM_LEFT_LOD;
+					if (crossTileData.m_lod < tileLod) tileCB.m_edgesData |= BOTTOM_LEFT_LOW_LOD;
+				}
+				if (x < GTerrainEdgeTiles - 1)
+				{
+					STileData const& crossTileData = m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y - 1];
+					tileCB.m_neighborsTilesBottomRight = crossTileData.m_verticesOffset;
+					if (tileLod < crossTileData.m_lod) tileCB.m_edgesData |= BOTTOM_RIGHT_LOD;
+					if (crossTileData.m_lod < tileLod) tileCB.m_edgesData |= BOTTOM_RIGHT_LOW_LOD;
+				}
 			}
 			if (x < GTerrainEdgeTiles - 1)
 			{
-				ELods const otherTileLod = m_terrain.m_tilesData[( x + 1 ) * GTerrainEdgeTiles + y ].m_lod;
-				if (tileLod < otherTileLod) tileCB.m_edgesData |= RIGHT_LOD;
+				STileData const& otherTileData = m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y];
+				tileCB.m_neighborsTilesRight = otherTileData.m_verticesOffset;
+				if (tileLod < otherTileData.m_lod) tileCB.m_edgesData |= RIGHT_LOD;
+				if (otherTileData.m_lod < tileLod) tileCB.m_edgesData |= RIGHT_LOW_LOD;
 			}
 			if (y < GTerrainEdgeTiles - 1)
 			{
-				ELods const otherTileLod = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y + 1].m_lod;
-				if (tileLod < otherTileLod) tileCB.m_edgesData |= TOP_LOD;
-			}
+				STileData const& otherTileData = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y + 1];
+				tileCB.m_neighborsTilesTop = otherTileData.m_verticesOffset;
+				if (tileLod <  otherTileData.m_lod) tileCB.m_edgesData |= TOP_LOD;
+				if (otherTileData.m_lod < tileLod) tileCB.m_edgesData |= TOP_LOW_LOD;
 
-			m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + flatID * sizeof(TileGenCB));
+				if (0 < x)
+				{
+					STileData const& crossTileData = m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y + 1];
+					tileCB.m_neighborsTilesTopLeft = crossTileData.m_verticesOffset;
+					if (tileLod < crossTileData.m_lod) tileCB.m_edgesData |= TOP_LEFT_LOD;
+					if (crossTileData.m_lod < tileLod) tileCB.m_edgesData |= TOP_LEFT_LOW_LOD;
+				}
+				if (x < GTerrainEdgeTiles - 1)
+				{
+					STileData const& crossTileData = m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y + 1];
+					tileCB.m_neighborsTilesTopRight = crossTileData.m_verticesOffset;
+					if (tileLod < crossTileData.m_lod) tileCB.m_edgesData |= TOP_RIGHT_LOD;
+					if (crossTileData.m_lod < tileLod) tileCB.m_edgesData |= TOP_RIGHT_LOW_LOD;
+				}
+			}
 			UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
+			m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + flatID * sizeof(TileGenCB));
 			m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
 		}
 	}
@@ -1024,7 +1074,18 @@ void CRender::UpdateTerrain()
 	verticesBarrier.UAV.pResource = m_terrain.m_vertices;
 
 	m_computeCL->ResourceBarrier(1, &verticesBarrier);
-	m_computeCL->SetPipelineState(m_terrain.m_terrainLightPSO);
+	m_computeCL->SetPipelineState(m_terrain.m_terrainLightPSOPass0);
+
+	for (UINT tileID = 0; tileID < GTerrainTilesNum; ++tileID)
+	{
+		ELods const tileLod = m_terrain.m_tilesData[tileID].m_lod;
+		UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
+		m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + tileID * sizeof(TileGenCB));
+		m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
+	}
+
+	m_computeCL->ResourceBarrier(1, &verticesBarrier);
+	m_computeCL->SetPipelineState(m_terrain.m_terrainLightPSOPass1);
 
 	for (UINT tileID = 0; tileID < GTerrainTilesNum; ++tileID)
 	{
@@ -1069,7 +1130,10 @@ void CRender::UpdateTerrain()
 
 void CRender::DrawFrame()
 {
-	UpdateTerrain();
+	if (GUpdateTerrain)
+	{
+		UpdateTerrain();
+	}
 
 	Matrix4x4 worldToProjection = GCamera.GetWorldToCamera() * GCamera.GetProjectionMatrix();
 	Matrix4x4 objectToProjection = worldToProjection;
@@ -1117,7 +1181,14 @@ void CRender::DrawFrame()
 	
 	commandList->DrawIndexedInstanced(m_skybox.m_indicesNum, 1, 0, 0, 0);
 
-	commandList->SetPipelineState(m_mainPSO);
+	if (GWireframe)
+	{
+		commandList->SetPipelineState(m_mainWireframePSO);
+	}
+	else
+	{
+		commandList->SetPipelineState(m_mainPSO);
+	}
 	commandList->IASetVertexBuffers(0, 1, &m_terrain.m_verticesView);
 	commandList->SetGraphicsRootDescriptorTable(1, terrainMaterial);
 
@@ -1236,6 +1307,7 @@ void CRender::Release()
 	m_computeDH->Release();
 
 	m_mainPSO->Release();
+	m_mainWireframePSO->Release();
 
 	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
 	{
@@ -1247,7 +1319,8 @@ void CRender::Release()
 	m_terrain.m_vertices->Release();
 	m_terrain.m_terrainRS->Release();
 	m_terrain.m_terrainPosPSO->Release();
-	m_terrain.m_terrainLightPSO->Release();
+	m_terrain.m_terrainLightPSOPass0->Release();
+	m_terrain.m_terrainLightPSOPass1->Release();
 	m_terrain.m_diffuseTex->Release();
 	m_terrain.m_normalTex->Release();
 

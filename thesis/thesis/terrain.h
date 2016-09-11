@@ -6,13 +6,30 @@
 #define BOTTOM_LOD 0x0002
 #define RIGHT_LOD 0x0004
 #define LEFT_LOD 0x0008
+#define TOP_LEFT_LOD 0x0010
+#define TOP_RIGHT_LOD 0x0020
+#define BOTTOM_LEFT_LOD 0x0040
+#define BOTTOM_RIGHT_LOD 0x0080
 
-#define TOP_TILE 0x0100
-#define BOTTOM_TILE 0x0200
-#define RIGHT_TILE 0x0400
-#define LEFT_TILE 0x0800
+#define TOP_LOW_LOD 0x0100
+#define BOTTOM_LOW_LOD 0x0200
+#define RIGHT_LOW_LOD 0x0400
+#define LEFT_LOW_LOD 0x0800
+#define TOP_LEFT_LOW_LOD 0x1000
+#define TOP_RIGHT_LOW_LOD 0x2000
+#define BOTTOM_LEFT_LOW_LOD 0x4000
+#define BOTTOM_RIGHT_LOW_LOD 0x8000
 
-#define EDGE_LOD_MASK 0x00FF
+#define TOP_TILE 0x00010000
+#define BOTTOM_TILE 0x00020000
+#define RIGHT_TILE 0x00040000
+#define LEFT_TILE 0x00080000
+#define TOP_LEFT_TILE TOP_TILE | LEFT_TILE
+#define TOP_RIGHT_TILE TOP_TILE | RIGHT_TILE
+#define BOTTOM_LEFT_TILE BOTTOM_TILE | LEFT_TILE
+#define BOTTOM_RIGHT_TILE BOTTOM_TILE | RIGHT_TILE
+
+#define EDGE_LOD_MASK 0x0000FFFF
 
 enum ELods
 {
@@ -59,7 +76,8 @@ public:
 
 	ID3D12RootSignature* m_terrainRS;
 	ID3D12PipelineState* m_terrainPosPSO;
-	ID3D12PipelineState* m_terrainLightPSO;
+	ID3D12PipelineState* m_terrainLightPSOPass0;
+	ID3D12PipelineState* m_terrainLightPSOPass1;
 
 	std::vector< STileData > m_tilesData;
 

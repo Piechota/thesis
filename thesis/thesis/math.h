@@ -241,6 +241,35 @@ struct Vec4
 	}
 };
 
+struct Vec4u
+{
+	union
+	{
+		struct
+		{
+			UINT x, y, z, w;
+		};
+		UINT m_data[4];
+	};
+
+	Vec4u()
+	{}
+	Vec4u(UINT const x, UINT const y, UINT const z, UINT const w)
+		: x(x)
+		, y(y)
+		, z(z)
+		, w(w)
+	{}
+
+	void Set(UINT const x, UINT const y, UINT const z, UINT const w)
+	{
+		this->x = x;
+		this->y = y;
+		this->z = z;
+		this->w = w;
+	}
+};
+
 struct Quaternion
 {
 	union

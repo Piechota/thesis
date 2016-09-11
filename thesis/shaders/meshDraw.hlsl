@@ -29,9 +29,9 @@ PSInput vsMain(VSInput input)
 {
     PSInput result;
     float3 bit = cross(input.tan, input.normal);
-    result.tbn[0] = mul(ObjectToWorld, float4(input.tan,0.f));
-    result.tbn[1] = mul(ObjectToWorld, float4(bit, 0.f));
-    result.tbn[2] = mul(ObjectToWorld, float4(input.normal, 0.f));
+	result.tbn[0] = input.tan;
+    result.tbn[1] = bit;
+    result.tbn[2] = input.normal;
     result.position = mul(WorldToProject, float4(input.position, 1.f));
 	result.uv = input.uv;
 
@@ -40,7 +40,7 @@ PSInput vsMain(VSInput input)
 
 float4 psMain(PSInput input) : SV_TARGET
 {
-	float4 result = DiffTex.Sample( Sampler, input.uv);
+	float4 result = DiffTex.Sample(Sampler, input.uv);
     float3 normal = NormTex.Sample( Sampler, input.uv).xyz;
     normal = mad(normal, 2.f, -1.f);
     normal = mul(normal, input.tbn);

@@ -11,6 +11,7 @@ enum EKeys
 	MSG_CLOSE,
 	K_ESCAPE,
 	K_F2,
+	K_F3,
 	K_SPACE = 32,
 	K_W = 'w',
 	K_S = 's',
@@ -100,6 +101,10 @@ public:
 				for ( IInputObserver* observer : GInputManager.m_observers )
 					observer->Input( K_F2 );
 				break;
+			case VK_F3:
+				for (IInputObserver* observer : GInputManager.m_observers)
+					observer->Input(K_F3);
+				break;
 			case VK_SPACE:
 				GInputManager.SetKey( static_cast<char const>(wParam), true );
 				for ( IInputObserver* observer : GInputManager.m_observers )
@@ -151,7 +156,8 @@ public:
 	}
 };
 
-
+extern bool GUpdateTerrain;
+extern bool GWireframe;
 class CSystemInput : public IInputObserver
 {
 public:
@@ -162,6 +168,12 @@ public:
 		case K_ESCAPE:
 		case MSG_DESTROY:
 			PostQuitMessage(0);
+			break;
+		case K_F2:
+			GUpdateTerrain = !GUpdateTerrain;
+			break;
+		case K_F3:
+			GWireframe = !GWireframe;
 			break;
 		}
 	}

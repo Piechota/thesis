@@ -16,6 +16,14 @@ struct TileGenCB
 	Vec2u m_heightmapRes;
 	UINT m_verticesOnEdge;
 	UINT m_quadsOnEdge;
+	UINT m_neighborsTilesLeft;
+	UINT m_neighborsTilesRight;
+	UINT m_neighborsTilesTop;
+	UINT m_neighborsTilesBottom;
+	UINT m_neighborsTilesTopLeft;
+	UINT m_neighborsTilesTopRight;
+	UINT m_neighborsTilesBottomLeft;
+	UINT m_neighborsTilesBottomRight;
 	UINT m_edgesData;
 	UINT m_dataOffset;
 };
