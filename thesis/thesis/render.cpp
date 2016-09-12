@@ -106,8 +106,6 @@ void CRender::InitCommands()
 	m_mainCA->SetName(L"MainCommandAllocator");
 	CheckFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&m_copyCA)));
 	m_copyCA->SetName(L"CopyCommandAllocator");
-	CheckFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&m_computeCA)));
-	m_computeCA->SetName(L"ComputeCommandAllocator");
 
 	CheckFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_mainCA, nullptr, IID_PPV_ARGS(&m_mainCL)));
 	m_mainCL->SetName(L"MainCommandList");
@@ -115,9 +113,16 @@ void CRender::InitCommands()
 	CheckFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, m_copyCA, nullptr, IID_PPV_ARGS(&m_copyCL)));
 	m_copyCL->SetName(L"CopyCommandList");
 	m_copyCL->Close();
-	CheckFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, m_computeCA, nullptr, IID_PPV_ARGS(&m_computeCL)));
-	m_computeCL->SetName(L"ComputeCommandList");
-	m_computeCL->Close();
+
+	for (UINT i = 0; i < TERRAIN_PASS_NUM; ++i)
+	{
+		CheckFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&m_computeCA[i])));
+		m_computeCA[i]->SetName(L"ComputeCommandAllocator");
+
+		CheckFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, m_computeCA[i], nullptr, IID_PPV_ARGS(&m_computeCL[i])));
+		m_computeCL[i]->SetName(L"ComputeCommandList");
+		m_computeCL[i]->Close();
+	}
 }
 
 void CRender::InitSwapChain()
@@ -132,7 +137,7 @@ void CRender::InitSwapChain()
 	descSwapChain.OutputWindow = GHWnd;
 	descSwapChain.SampleDesc.Count = 1;
 	descSwapChain.Windowed = TRUE;
-	
+
 	IDXGISwapChain* swapChain;
 	CheckFailed(m_factor->CreateSwapChain(m_mainCQ, &descSwapChain, &swapChain));
 	m_swapChain = (IDXGISwapChain3*)swapChain;
@@ -169,7 +174,7 @@ void CRender::InitRenderTargets()
 	depthOptimizedClearValue.Format = DXGI_FORMAT_D32_FLOAT;
 	depthOptimizedClearValue.DepthStencil.Depth = 1.f;
 	depthOptimizedClearValue.DepthStencil.Stencil = 0;
-	
+
 	D3D12_RESOURCE_DESC descResource = {};
 	descResource.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 	descResource.Width = GWidth;
@@ -212,7 +217,7 @@ void CRender::InitRenderFrames()
 	for (UINT frameID = 0; frameID < FRAME_NUM; ++frameID)
 	{
 		SRenderFrame& renderFrame = m_renderFrames[frameID];
-		
+
 		CheckFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&renderFrame.m_commandAllocator)));
 		renderFrame.m_commandAllocator->SetName(L"FrameCommandAllocator");
 
@@ -238,7 +243,7 @@ void CRender::InitRenderFrames()
 
 void CRender::InitRootSignature()
 {
-	D3D12_DESCRIPTOR_RANGE descriptorRange[] = 
+	D3D12_DESCRIPTOR_RANGE descriptorRange[] =
 	{
 		{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND }
 	};
@@ -497,7 +502,7 @@ void CRender::InitSkybox()
 	UINT32* indices = nullptr;
 	UINT verticesNum = 0;
 	m_skybox.m_indicesNum = 0;
-	
+
 	GMeshLoader.LoadMesh("../content/skydome.fbx", verticesNum, &vertices, m_skybox.m_indicesNum, &indices);
 
 	D3D12_RESOURCE_DESC descResource = {};
@@ -528,7 +533,7 @@ void CRender::InitSkybox()
 	void* pGPU;
 	verticesUploadRes->Map(0, nullptr, &pGPU);
 	D3D12_MEMCPY_DEST destData = { (BYTE*)pGPU + footprint.Offset, footprint.Footprint.RowPitch, footprint.Footprint.RowPitch * numRows };
-	for ( UINT z = 0; z < footprint.Footprint.Depth; ++z)
+	for (UINT z = 0; z < footprint.Footprint.Depth; ++z)
 	{
 		SIZE_T const slice = destData.SlicePitch * z;
 		BYTE* pDstSlice = (BYTE*)destData.pData + slice;
@@ -574,11 +579,10 @@ void CRender::InitSkybox()
 	m_copyCL->CopyResource(m_skybox.m_meshVertices, verticesUploadRes);
 	m_copyCL->CopyResource(m_skybox.m_meshInidces, indicesUploadRes);
 
-	ID3D12Resource* textureUploadRes = CopyTexture( skyboxTexture, &m_skybox.m_texture );
+	ID3D12Resource* textureUploadRes = CopyTexture(skyboxTexture, &m_skybox.m_texture);
 
 	m_copyCL->Close();
-	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
-	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
+	m_copyCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_copyCL));
 
 	D3D12_RESOURCE_BARRIER barrires[3];
 	barrires[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -616,8 +620,7 @@ void CRender::InitSkybox()
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 
-	ID3D12CommandList* ppMainCL[] = { m_mainCL };
-	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+	m_mainCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_mainCL));
 
 	verticesUploadRes->Release();
 	indicesUploadRes->Release();
@@ -738,26 +741,25 @@ void CRender::InitTerrain()
 
 	indicesCB->Unmap(0, nullptr);
 
-	m_computeCA->Reset();
-	m_computeCL->Reset(m_computeCA, idPSO);
+	m_computeCA[0]->Reset();
+	m_computeCL[0]->Reset(m_computeCA[0], idPSO);
 
-	m_computeCL->SetComputeRootSignature(terrainIndicesRootSignature);
+	m_computeCL[0]->SetComputeRootSignature(terrainIndicesRootSignature);
 
 	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = indicesCB->GetGPUVirtualAddress();
 	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
 	{
 		UINT const indGroupNum = (UINT)ceil((float)GTerrainLodInfo[lodID][1] / 32.f);
 
-		m_computeCL->SetComputeRootConstantBufferView(0, cbAddress);
-		m_computeCL->SetComputeRootUnorderedAccessView(1, m_terrain.m_indices[lodID]->GetGPUVirtualAddress());
-		m_computeCL->Dispatch(indGroupNum, indGroupNum, 1);
+		m_computeCL[0]->SetComputeRootConstantBufferView(0, cbAddress);
+		m_computeCL[0]->SetComputeRootUnorderedAccessView(1, m_terrain.m_indices[lodID]->GetGPUVirtualAddress());
+		m_computeCL[0]->Dispatch(indGroupNum, indGroupNum, 1);
 		cbAddress += sizeof(TileGenCB);
 	}
 
-	m_computeCL->Close();
+	m_computeCL[0]->Close();
 
-	ID3D12CommandList* ppComputeCL[] = { m_computeCL };
-	m_computeCQ->ExecuteCommandLists(1, ppComputeCL);
+	m_computeCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_computeCL[0]));
 
 	STexutre heightmap;
 	void* cpuImgHM = GTextureLoader.LoadTexture("../content/terrain_hm.dds", heightmap);
@@ -775,8 +777,7 @@ void CRender::InitTerrain()
 
 	m_copyCL->Close();
 
-	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
-	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
+	m_copyCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_copyCL));
 
 	D3D12_RESOURCE_BARRIER barriers[ELods::MAX + 1];
 	for (UINT lodID = 0; lodID < ELods::MAX; ++lodID)
@@ -802,8 +803,6 @@ void CRender::InitTerrain()
 	m_mainCL->ResourceBarrier(ELods::MAX + 1, barriers);
 
 	m_mainCL->Close();
-
-	ID3D12CommandList* ppMainCL[] = { m_mainCL };
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	srvDesc.Format = heightmap.m_format;
@@ -875,7 +874,7 @@ void CRender::InitTerrain()
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 
-	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+	m_mainCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_mainCL));
 
 	indicesCB->Release();
 	idPSO->Release();
@@ -910,7 +909,7 @@ void CRender::InitTerrain()
 			UINT const flatID = x * GTerrainEdgeTiles + y;
 			TileGenCB& tileCB = m_terrain.m_pGpuTileData[flatID];
 
-			tileCB.m_heightmapRect.Set( invTilesEdgeNum, (float)x * invTilesEdgeNum, (float)y * invTilesEdgeNum);
+			tileCB.m_heightmapRect.Set(invTilesEdgeNum, (float)x * invTilesEdgeNum, (float)y * invTilesEdgeNum);
 			tileCB.m_worldTileSize = GTerrainSize.x * invTilesEdgeNum;
 			tileCB.m_terrainHeight = GTerrainSize.y;
 			tileCB.m_tilePosition.Set(x * tileCB.m_worldTileSize, y * tileCB.m_worldTileSize);
@@ -945,7 +944,39 @@ void CRender::UpdateTerrain()
 	verticesBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 	verticesBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
 	verticesBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	ID3D12CommandList* ppMainCL[] = { m_mainCL };
+
+	Vec3 const cameraPos = GCamera.GetPosition();
+	UINT verticesNum = 0;
+	bool needUpdate = false;
+	for (UINT tileID = 0; tileID < GTerrainTilesNum; ++tileID)
+	{
+		STileData& tileData = m_terrain.m_tilesData[tileID];
+
+		ELods nLod = LOD2;
+		tileData.m_needUpdate = false;
+
+		float const sqDistance = (cameraPos - tileData.m_centerPosition).LengthSq();
+		if (sqDistance < GTerrainLoad1Sq)
+		{
+			nLod = LOD1;
+			if (sqDistance < GTerrainLoad0Sq)
+			{
+				nLod = LOD0;
+			}
+		}
+		if (nLod != tileData.m_lod)
+		{
+			tileData.m_lod = nLod;
+			tileData.m_needUpdate = true;
+			needUpdate = true;
+		}
+
+		verticesNum += (GTerrainLodInfo[tileData.m_lod][1] + 1) * (GTerrainLodInfo[tileData.m_lod][1] + 1);
+	}
+	if (!needUpdate)
+	{
+		return;
+	}
 
 	m_mainCA->Reset();
 	m_mainCL->Reset(m_mainCA, nullptr);
@@ -955,36 +986,7 @@ void CRender::UpdateTerrain()
 		m_mainCL->ResourceBarrier(1, &verticesBarrier);
 	}
 	m_mainCL->Close();
-	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
-
-	Vec3 const cameraPos = GCamera.GetPosition();
-	UINT verticesNum = 0;
-	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
-	{
-		for (UINT y = 0; y < GTerrainEdgeTiles; ++y)
-		{
-			UINT const tileID = x * GTerrainEdgeTiles + y;
-			STileData& tileData = m_terrain.m_tilesData[tileID];
-
-				ELods nLod = LOD2;
-				float const sqDistance = (cameraPos - tileData.m_centerPosition).LengthSq();
-				if (sqDistance < GTerrainLoad1Sq)
-				{
-					nLod = LOD1;
-					if (sqDistance < GTerrainLoad0Sq)
-					{
-						nLod = LOD0;
-					}
-				}
-				if (nLod != tileData.m_lod)
-				{
-					tileData.m_lod = nLod;
-					tileData.m_needUpdate = true;
-				}
-
-				verticesNum += (GTerrainLodInfo[tileData.m_lod][1] + 1) * (GTerrainLodInfo[tileData.m_lod][1] + 1);
-		}
-	}
+	m_mainCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_mainCL));
 
 	D3D12_RESOURCE_DESC descVertics = {};
 	descVertics.DepthOrArraySize = 1;
@@ -1001,7 +1003,7 @@ void CRender::UpdateTerrain()
 	m_terrain.m_vertices->SetName(L"TerrainVertices");
 	m_terrain.m_verticesView.BufferLocation = m_terrain.m_vertices->GetGPUVirtualAddress();
 	m_terrain.m_verticesView.SizeInBytes = descVertics.Width;
-	
+
 	m_copyCA->Reset();
 	m_copyCL->Reset(m_copyCA, nullptr);
 	UINT64 verticesOffset = 0;
@@ -1024,21 +1026,27 @@ void CRender::UpdateTerrain()
 		}
 	}
 	m_copyCL->Close();
-	ID3D12CommandList* ppCopyCL[] = { m_copyCL };
 
 	CheckFailed(m_mainCQ->Signal(m_fence, m_fenceValue));
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 
-	m_copyCQ->ExecuteCommandLists(1, ppCopyCL);
+	m_copyCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_copyCL));
 
-	m_computeCA->Reset();
-	m_computeCL->Reset(m_computeCA, m_terrain.m_terrainPosPSO);
-	m_computeCL->SetDescriptorHeaps(1, &m_computeDH);
-	m_computeCL->SetComputeRootSignature(m_terrain.m_terrainRS);
-	m_computeCL->SetComputeRootUnorderedAccessView(1, m_terrain.m_vertices->GetGPUVirtualAddress());
-	m_computeCL->SetComputeRootDescriptorTable(2, m_computeDH->GetGPUDescriptorHandleForHeapStart());
+	for (UINT i = 0; i < TERRAIN_PASS_NUM; ++i)
+	{
+		m_computeCA[i]->Reset();
+		m_computeCL[i]->Reset(m_computeCA[i], nullptr);
+		m_computeCL[i]->SetDescriptorHeaps(1, &m_computeDH);
+		m_computeCL[i]->SetComputeRootSignature(m_terrain.m_terrainRS);
+		m_computeCL[i]->SetComputeRootUnorderedAccessView(1, m_terrain.m_vertices->GetGPUVirtualAddress());
+		m_computeCL[i]->SetComputeRootDescriptorTable(2, m_computeDH->GetGPUDescriptorHandleForHeapStart());
+	}
+
+	m_computeCL[0]->SetPipelineState(m_terrain.m_terrainPosPSO);
+	m_computeCL[1]->SetPipelineState(m_terrain.m_terrainLightPSOPass0);
+	m_computeCL[2]->SetPipelineState(m_terrain.m_terrainLightPSOPass1);
 
 	D3D12_GPU_VIRTUAL_ADDRESS vTileCB = m_terrain.m_gpuTileData->GetGPUVirtualAddress();
 	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
@@ -1074,7 +1082,7 @@ void CRender::UpdateTerrain()
 
 				if (0 < x)
 				{
-					STileData const& crossTileData = m_terrain.m_tilesData[( x - 1) * GTerrainEdgeTiles + y - 1];
+					STileData const& crossTileData = m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y - 1];
 					tileCB.m_neighborsTilesBottomLeft = crossTileData.m_verticesOffset;
 					if (tileLod < crossTileData.m_lod) nMask |= BOTTOM_LEFT_LOD;
 					if (crossTileData.m_lod < tileLod) nMask |= BOTTOM_LEFT_LOW_LOD;
@@ -1098,7 +1106,7 @@ void CRender::UpdateTerrain()
 			{
 				STileData const& otherTileData = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y + 1];
 				tileCB.m_neighborsTilesTop = otherTileData.m_verticesOffset;
-				if (tileLod <  otherTileData.m_lod) nMask |= TOP_LOD;
+				if (tileLod < otherTileData.m_lod) nMask |= TOP_LOD;
 				if (otherTileData.m_lod < tileLod) nMask |= TOP_LOW_LOD;
 
 				if (0 < x)
@@ -1122,8 +1130,11 @@ void CRender::UpdateTerrain()
 				tileCB.m_edgesData |= nMask;
 				tileData.m_needUpdate = true;
 				UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
-				m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + flatID * sizeof(TileGenCB));
-				m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
+				for (UINT i = 0; i < TERRAIN_PASS_NUM; ++i)
+				{
+					m_computeCL[i]->SetComputeRootConstantBufferView(0, vTileCB + flatID * sizeof(TileGenCB));
+					m_computeCL[i]->Dispatch(verGroupNum, verGroupNum, 1);
+				}
 			}
 		}
 	}
@@ -1138,7 +1149,7 @@ void CRender::UpdateTerrain()
 			{
 				if (0 < x && y < GTerrainEdgeTiles - 1)
 				{
-					STileData& otherTileData = m_terrain.m_tilesData[(x-1) * GTerrainEdgeTiles + y + 1];
+					STileData& otherTileData = m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y + 1];
 					if (!otherTileData.m_needUpdate)
 					{
 						tileCB.m_edgesData |= UPDATE_LT_CORNER;
@@ -1161,7 +1172,7 @@ void CRender::UpdateTerrain()
 					}
 					if (0 < x)
 					{
-						STileData& cornerTileData = m_terrain.m_tilesData[(x-1) * GTerrainEdgeTiles + y - 1];
+						STileData& cornerTileData = m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y - 1];
 						if (!cornerTileData.m_needUpdate)
 						{
 							tileCB.m_edgesData |= UPDATE_LB_CORNER;
@@ -1179,41 +1190,10 @@ void CRender::UpdateTerrain()
 			}
 		}
 	}
-
-	verticesBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-	verticesBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-	verticesBarrier.UAV.pResource = m_terrain.m_vertices;
-
-	m_computeCL->ResourceBarrier(1, &verticesBarrier);
-	m_computeCL->SetPipelineState(m_terrain.m_terrainLightPSOPass0);
-
-	for (UINT tileID = 0; tileID < GTerrainTilesNum; ++tileID)
+	for (UINT i = 0; i < TERRAIN_PASS_NUM; ++i)
 	{
-		if (m_terrain.m_tilesData[tileID].m_needUpdate)
-		{
-			ELods const tileLod = m_terrain.m_tilesData[tileID].m_lod;
-			UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
-			m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + tileID * sizeof(TileGenCB));
-			m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
-		}
+		m_computeCL[i]->Close();
 	}
-
-	m_computeCL->ResourceBarrier(1, &verticesBarrier);
-	m_computeCL->SetPipelineState(m_terrain.m_terrainLightPSOPass1);
-
-	for (UINT tileID = 0; tileID < GTerrainTilesNum; ++tileID)
-	{
-		if (m_terrain.m_tilesData[tileID].m_needUpdate)
-		{
-			m_terrain.m_tilesData[tileID].m_needUpdate = false;
-			ELods const tileLod = m_terrain.m_tilesData[tileID].m_lod;
-			UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
-			m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + tileID * sizeof(TileGenCB));
-			m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
-		}
-	}
-
-	m_computeCL->Close();
 
 	CheckFailed(m_copyCQ->Signal(m_fence, m_fenceValue));
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
@@ -1230,7 +1210,7 @@ void CRender::UpdateTerrain()
 	m_mainCL->ResourceBarrier(1, &verticesBarrier);
 
 	m_mainCL->Close();
-	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+	m_mainCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_mainCL));
 
 	if (oldVerticesRes)
 	{
@@ -1242,8 +1222,15 @@ void CRender::UpdateTerrain()
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 
-	ID3D12CommandList* ppComputeCL[] = { m_computeCL };
-	m_computeCQ->ExecuteCommandLists(1, ppComputeCL);
+	m_computeCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_computeCL[0]));
+	m_computeCQ->Signal(m_fence, m_fenceValue);
+	m_computeCQ->Wait(m_fence, m_fenceValue);
+	m_computeCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_computeCL[1]));
+	++m_fenceValue;
+	m_computeCQ->Signal(m_fence, m_fenceValue);
+	m_computeCQ->Wait(m_fence, m_fenceValue);
+	m_computeCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_computeCL[2]));
+	++m_fenceValue;
 
 	verticesBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	verticesBarrier.Transition.pResource = m_terrain.m_vertices;
@@ -1263,7 +1250,7 @@ void CRender::UpdateTerrain()
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 
-	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+	m_mainCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&m_mainCL));
 
 	CheckFailed(m_mainCQ->Signal(m_fence, m_fenceValue));
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
@@ -1273,14 +1260,29 @@ void CRender::UpdateTerrain()
 
 void CRender::DrawFrame()
 {
+	static float maxTime = 0.f;
+	static int sampleNum = 0;
+	static float avgTime = 0.f;
+
 	CheckFailed(m_mainCQ->Signal(m_fence, m_fenceValue));
 	CheckFailed(m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent));
 	++m_fenceValue;
 	WaitForSingleObject(m_fenceEvent, INFINITE);
 
+	float td = 0.f;
 	if (GUpdateTerrain)
 	{
+		long t = GTimer.TimeFromStart();
 		UpdateTerrain();
+		td = GTimer.GetSeconds(GTimer.TimeFromStart() - t);
+		maxTime = max(maxTime, td);
+		if (sampleNum)
+		{
+			avgTime = avgTime * sampleNum;
+		}
+		++sampleNum;
+		avgTime += td;
+		avgTime = avgTime / sampleNum;
 	}
 
 	Matrix4x4 worldToProjection = GCamera.GetWorldToCamera() * GCamera.GetProjectionMatrix();
@@ -1314,19 +1316,19 @@ void CRender::DrawFrame()
 	commandList->ClearDepthStencilView(depthDH, D3D12_CLEAR_FLAG_DEPTH, 1.f, 0, 0, nullptr);
 
 	commandList->SetDescriptorHeaps(1, &m_materialsDH);
-	
+
 	commandList->RSSetScissorRects(1, &m_scissorRect);
 	commandList->RSSetViewports(1, &m_viewport);
-	
+
 	commandList->SetGraphicsRootSignature(m_mainRS);
-	
+
 	commandList->SetGraphicsRootConstantBufferView(0, m_pRenderFrame->m_frameResource->GetGPUVirtualAddress());
 	commandList->SetGraphicsRootDescriptorTable(1, m_materialsDH->GetGPUDescriptorHandleForHeapStart());
-	
+
 	commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	commandList->IASetIndexBuffer(&m_skybox.m_indicesBufferView);
 	commandList->IASetVertexBuffers(0, 1, &m_skybox.m_verticesBufferView);
-	
+
 	commandList->DrawIndexedInstanced(m_skybox.m_indicesNum, 1, 0, 0, 0);
 
 	if (GWireframe)
@@ -1353,8 +1355,7 @@ void CRender::DrawFrame()
 
 	CheckFailed(commandList->Close());
 
-	ID3D12CommandList* ppMainCL[] = { commandList };
-	m_mainCQ->ExecuteCommandLists(1, ppMainCL);
+	m_mainCQ->ExecuteCommandLists(1, (ID3D12CommandList**)(&commandList));
 
 	CheckFailed(m_swapChain->Present(0, 0));
 
@@ -1431,8 +1432,12 @@ void CRender::Release()
 	m_copyCL->Release();
 
 	m_computeCQ->Release();
-	m_computeCA->Release();
-	m_computeCL->Release();
+
+	for (UINT i = 0; i < TERRAIN_PASS_NUM; ++i)
+	{
+		m_computeCA[i]->Release();
+		m_computeCL[i]->Release();
+	}
 
 	for (UINT frameID = 0; frameID < FRAME_NUM; ++frameID)
 	{

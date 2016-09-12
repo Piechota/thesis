@@ -9,6 +9,7 @@ class CRender
 {
 private:
 	enum { FRAME_NUM = 3 };
+	enum { TERRAIN_PASS_NUM = 3 };
 
 #ifdef _DEBUG
 	ID3D12Debug*				m_debugController;
@@ -33,8 +34,8 @@ private:
 	ID3D12GraphicsCommandList*	m_copyCL;
 	
 	ID3D12CommandQueue*			m_computeCQ;
-	ID3D12CommandAllocator*		m_computeCA;
-	ID3D12GraphicsCommandList*	m_computeCL;
+	ID3D12CommandAllocator*		m_computeCA[TERRAIN_PASS_NUM];
+	ID3D12GraphicsCommandList*	m_computeCL[TERRAIN_PASS_NUM];
 
 	SRenderFrame				m_renderFrames[FRAME_NUM];
 	SRenderFrame*				m_pRenderFrame;
