@@ -959,27 +959,40 @@ void CRender::UpdateTerrain()
 
 	Vec3 const cameraPos = GCamera.GetPosition();
 	UINT verticesNum = 0;
-	for (UINT tileID = 0; tileID < GTerrainTilesNum; ++tileID)
+	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
 	{
-		STileData& tileData = m_terrain.m_tilesData[tileID];
-
-		ELods nLod = LOD2;
-		float const sqDistance = (cameraPos - tileData.m_centerPosition).LengthSq();
-		if (sqDistance < GTerrainLoad1Sq)
+		for (UINT y = 0; y < GTerrainEdgeTiles; ++y)
 		{
-			nLod = LOD1;
-			if (sqDistance < GTerrainLoad0Sq)
-			{
-				nLod = LOD0;
-			}
-		}
-		if (nLod != tileData.m_lod)
-		{
-			tileData.m_lod = nLod;
-			tileData.m_needUpdate = true;
-		}
+			UINT const tileID = x * GTerrainEdgeTiles + y;
+			STileData& tileData = m_terrain.m_tilesData[tileID];
 
-		verticesNum += (GTerrainLodInfo[tileData.m_lod][1] + 1) * (GTerrainLodInfo[tileData.m_lod][1] + 1);
+				ELods nLod = LOD2;
+				float const sqDistance = (cameraPos - tileData.m_centerPosition).LengthSq();
+				if (sqDistance < GTerrainLoad1Sq)
+				{
+					nLod = LOD1;
+					if (sqDistance < GTerrainLoad0Sq)
+					{
+						nLod = LOD0;
+					}
+				}
+				if (nLod != tileData.m_lod)
+				{
+					tileData.m_lod = nLod;
+					tileData.m_needUpdate = true;
+				}
+
+				verticesNum += (GTerrainLodInfo[tileData.m_lod][1] + 1) * (GTerrainLodInfo[tileData.m_lod][1] + 1);
+				if (x < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y].m_needUpdate = true;
+				if (0 < x) m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y].m_needUpdate = true;
+				if (y < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[x * GTerrainEdgeTiles + y + 1].m_needUpdate = true;
+				if (0 < y) m_terrain.m_tilesData[x * GTerrainEdgeTiles + y - 1].m_needUpdate = true;
+
+				if (y < GTerrainEdgeTiles - 1 && x < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y + 1].m_needUpdate = true;
+				if (y < GTerrainEdgeTiles - 1 && 0 < x) m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y + 1].m_needUpdate = true;
+				if (0 < y  && x < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y - 1].m_needUpdate = true;
+				if (0 < y  && 0 < x) m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y - 1].m_needUpdate = true;
+		}
 	}
 
 	D3D12_RESOURCE_DESC descVertics = {};
