@@ -54,6 +54,7 @@ struct STileData
 	Vec3 m_centerPosition;
 	UINT m_verticesOffset;
 	ELods m_lod;
+	bool m_needUpdate;
 };
 
 class CTerrain
