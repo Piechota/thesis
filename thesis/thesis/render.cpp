@@ -983,15 +983,6 @@ void CRender::UpdateTerrain()
 				}
 
 				verticesNum += (GTerrainLodInfo[tileData.m_lod][1] + 1) * (GTerrainLodInfo[tileData.m_lod][1] + 1);
-				if (x < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y].m_needUpdate = true;
-				if (0 < x) m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y].m_needUpdate = true;
-				if (y < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[x * GTerrainEdgeTiles + y + 1].m_needUpdate = true;
-				if (0 < y) m_terrain.m_tilesData[x * GTerrainEdgeTiles + y - 1].m_needUpdate = true;
-
-				if (y < GTerrainEdgeTiles - 1 && x < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y + 1].m_needUpdate = true;
-				if (y < GTerrainEdgeTiles - 1 && 0 < x) m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y + 1].m_needUpdate = true;
-				if (0 < y  && x < GTerrainEdgeTiles - 1) m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y - 1].m_needUpdate = true;
-				if (0 < y  && 0 < x) m_terrain.m_tilesData[(x - 1) * GTerrainEdgeTiles + y - 1].m_needUpdate = true;
 		}
 	}
 
@@ -1058,6 +1049,8 @@ void CRender::UpdateTerrain()
 			STileData& tileData = m_terrain.m_tilesData[flatID];
 			ELods const tileLod = tileData.m_lod;
 			TileGenCB& tileCB = m_terrain.m_pGpuTileData[flatID];
+
+			tileCB.m_edgesData &= ~EDGE_UPDATE_MASK;
 
 			UINT nMask = 0;
 			tileCB.m_verticesOnEdge = GTerrainLodInfo[tileLod][1] + 1;
@@ -1131,6 +1124,58 @@ void CRender::UpdateTerrain()
 				UINT const verGroupNum = (UINT)ceil((float)(GTerrainLodInfo[tileLod][1] + 1) / 22.f);
 				m_computeCL->SetComputeRootConstantBufferView(0, vTileCB + flatID * sizeof(TileGenCB));
 				m_computeCL->Dispatch(verGroupNum, verGroupNum, 1);
+			}
+		}
+	}
+	for (UINT x = 0; x < GTerrainEdgeTiles; ++x)
+	{
+		for (UINT y = 0; y < GTerrainEdgeTiles; ++y)
+		{
+			UINT const flatID = x * GTerrainEdgeTiles + y;
+			STileData& tileData = m_terrain.m_tilesData[flatID];
+			TileGenCB& tileCB = m_terrain.m_pGpuTileData[flatID];
+			if (tileData.m_needUpdate)
+			{
+				if (0 < x && y < GTerrainEdgeTiles - 1)
+				{
+					STileData& otherTileData = m_terrain.m_tilesData[(x-1) * GTerrainEdgeTiles + y + 1];
+					if (!otherTileData.m_needUpdate)
+					{
+						tileCB.m_edgesData |= UPDATE_LT_CORNER;
+					}
+				}
+				if (x < GTerrainEdgeTiles - 1)
+				{
+					STileData& otherTileData = m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y];
+					if (!otherTileData.m_needUpdate)
+					{
+						tileCB.m_edgesData |= UPDATE_RIGHT_EDGE;
+					}
+				}
+				if (0 < y)
+				{
+					STileData& otherTileData = m_terrain.m_tilesData[x * GTerrainEdgeTiles + y - 1];
+					if (!otherTileData.m_needUpdate)
+					{
+						tileCB.m_edgesData |= UPDATE_BOTTOM_EDGE;
+					}
+					if (0 < x)
+					{
+						STileData& cornerTileData = m_terrain.m_tilesData[(x-1) * GTerrainEdgeTiles + y - 1];
+						if (!cornerTileData.m_needUpdate)
+						{
+							tileCB.m_edgesData |= UPDATE_LB_CORNER;
+						}
+					}
+					if (x < GTerrainEdgeTiles - 1)
+					{
+						STileData& cornerTileData = m_terrain.m_tilesData[(x + 1) * GTerrainEdgeTiles + y - 1];
+						if (!cornerTileData.m_needUpdate)
+						{
+							tileCB.m_edgesData |= UPDATE_RB_CORNER;
+						}
+					}
+				}
 			}
 		}
 	}
